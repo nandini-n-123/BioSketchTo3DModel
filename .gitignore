@@ -1,17 +1,7 @@
-# Python Virtual Environments
-biosketch_env/
-venv/
-env/
-
-# Python Cache
-__pycache__/
-*.pyc
-
-# Debug outputs
-debug_results/
-*.jpg
-*.jpeg
+brain_env/
+dataset/
+*.pt
+*.exe
 *.png
-
-# Mac system files (if anyone uses a Mac)
-.DS_Store
+*.jpg
+__pycache__/
