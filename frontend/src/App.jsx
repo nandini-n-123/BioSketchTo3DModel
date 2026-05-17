@@ -1,139 +1,100 @@
-import { useState, useRef } from "react";
+import UploadSection from "./UploadSection";
 import "./index.css";
 
-// 3D
-import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, useGLTF } from "@react-three/drei";
-
-// =======================
-// 🧠 Brain Model
-// =======================
-function BrainModel() {
-  const { scene } = useGLTF("/models/brain.glb");
-  const ref = useRef();
-
-  useFrame(() => {
-    if (ref.current) ref.current.rotation.y += 0.01;
-  });
-
-  const handleClick = () => {
-    if (ref.current) ref.current.scale.set(0.8, 0.8, 0.8); // zoom in
-  };
-
-  return (
-    <primitive
-      ref={ref}
-      object={scene}
-      scale={0.6}
-      position={[0, 0, 0]}
-      onClick={handleClick}
-    />
-  );
-}
-
-// =======================
-// 🌺 Hibiscus Model
-// =======================
-function HibiscusModel() {
-  const { scene } = useGLTF("/models/hibiscus.glb");
-  const ref = useRef();
-
-  useFrame(() => {
-    if (ref.current) ref.current.rotation.y += 0.01;
-  });
-
-  const handleClick = () => {
-    if (ref.current) ref.current.scale.set(0.8, 0.8, 0.8);
-  };
-
-  return (
-    <primitive
-      ref={ref}
-      object={scene}
-      scale={0.6}
-      position={[0, 0, 0]}
-      onClick={handleClick}
-    />
-  );
-}
-
 function App() {
-  const [selectedImage, setSelectedImage] = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [prediction, setPrediction] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  // File select
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    setSelectedImage(file);
-    setPreview(URL.createObjectURL(file));
-  };
-
-  // API call
-  const handleUpload = async () => {
-    if (!selectedImage) return;
-
-    setLoading(true);
-
-    const formData = new FormData();
-    formData.append("file", selectedImage);
-
-    try {
-      const response = await fetch(
-        "http://127.0.0.1:8000/api/classify-sketch",
-        {
-          method: "POST",
-          body: formData,
-        }
-      );
-
-      const data = await response.json();
-      setPrediction(data.prediction);
-    } catch (err) {
-      console.error(err);
-      alert("Error connecting to backend");
-    }
-
-    setLoading(false);
+  const scrollToUpload = () => {
+    document.querySelector(".upload-wrapper").scrollIntoView({
+      behavior: "smooth",
+    });
   };
 
   return (
-    <div className="app">
-      {/* LEFT PANEL */}
-      <div className="panel left">
-        <h1>Sketch2Anatomy</h1>
+    <div className="main">
 
-        <input type="file" onChange={handleFileChange} />
+      {/* BACKGROUND */}
+      <div className="bg-glow"></div>
+      <div className="bg-grid"></div>
 
-        {preview && (
-          <img src={preview} alt="preview" className="preview" />
-        )}
+      {/* NAVBAR */}
+      <nav className="navbar">
+        <h2>BioSketch3D</h2>
+        <div className="nav-links">
+          <a href="#">Home</a>
+          <a href="#how">How it Works</a>
+          <a href="#why">About</a>
+        </div>
+      </nav>
 
-        <button onClick={handleUpload} disabled={!selectedImage}>
-          {loading ? "Processing..." : "Identify & Visualize"}
+      {/* HERO */}
+      <section className="hero">
+        <h1>
+          Convert your <span>sketches</span> into 3D
+        </h1>
+
+        <p>
+          Upload hand-drawn biological diagrams and convert them into
+          interactive 3D models using AI + Computer Vision.
+        </p>
+
+        <button className="primary-btn" onClick={scrollToUpload}>
+          Get Started
         </button>
+      </section>
 
-        {prediction && (
-          <p className="result">Detected: {prediction}</p>
-        )}
-      </div>
+      {/* HOW */}
+      <section id="how" className="section">
+        <h2>How it works</h2>
 
-      {/* RIGHT PANEL */}
-      <div className="panel right">
-        <h2>3D Viewer</h2>
+        <div className="grid">
+          <div className="card">
+            <h3>Upload</h3>
+            <p>Upload your hand-drawn sketch</p>
+          </div>
 
-        <Canvas camera={{ position: [0, 0, 5] }} style={{ height: "400px" }}>
-          <ambientLight intensity={0.7} />
-          <directionalLight position={[2, 2, 2]} intensity={1} />
+          <div className="card">
+            <h3>Processing</h3>
+            <p>OpenCV cleans and extracts structure</p>
+          </div>
 
-          {/* SAFE MODEL SWITCHING */}
-          {prediction === "brain" && <BrainModel />}
-          {prediction === "hibiscus" && <HibiscusModel />}
+          <div className="card">
+            <h3>AI Detection</h3>
+            <p>CNN identifies the diagram</p>
+          </div>
 
-          <OrbitControls />
-        </Canvas>
-      </div>
+          <div className="card">
+            <h3>3D Model</h3>
+            <p>Interactive model is rendered</p>
+          </div>
+        </div>
+      </section>
+
+      {/* WHY */}
+      <section id="why" className="section">
+        <h2>Why this matters</h2>
+
+        <div className="grid">
+          <div className="card">
+            <h3>Better Learning</h3>
+            <p>Visualize complex biological structures in 3D</p>
+          </div>
+
+          <div className="card">
+            <h3>Student Friendly</h3>
+            <p>Turn notes into interactive understanding</p>
+          </div>
+
+          <div className="card">
+            <h3>AI Powered</h3>
+            <p>Combines computer vision + deep learning</p>
+          </div>
+        </div>
+      </section>
+
+      {/* UPLOAD */}
+      <section className="upload-wrapper">
+        <UploadSection />
+      </section>
+
     </div>
   );
 }
