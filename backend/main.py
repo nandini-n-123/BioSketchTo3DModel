@@ -1,130 +1,524 @@
-from fastapi import FastAPI, File, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-import cv2
-import numpy as np
-import torch
-import torch.nn as nn
-from torchvision import transforms
-from torchvision.models import efficientnet_b0
-from PIL import Image
 import os
+import sys
+import uuid
+from pathlib import Path
+from typing import Optional, Dict, Any
 
-# =========================
-# INIT APP
-# =========================
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+
+# ============================================================
+# Project paths
+# ============================================================
+
+# main.py is inside:
+# backend/main.py
+BACKEND_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BACKEND_DIR.parent
+
+DEFORM_ROOT = BACKEND_DIR / "deform"
+MODEL_SCRIPTS_ROOT = PROJECT_ROOT / "model_scripts"
+MODEL_SCRIPTS_SRC = MODEL_SCRIPTS_ROOT / "src"
+
+UPLOADS_DIR = BACKEND_DIR / "uploads"
+OUTPUTS_DIR = BACKEND_DIR / "outputs"
+
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Allow importing:
+#   from app.pipeline import deform_organ
+#   from biosketch_classifier.predictor import OrganClassifier
+if str(DEFORM_ROOT) not in sys.path:
+    sys.path.insert(0, str(DEFORM_ROOT))
+
+if str(MODEL_SCRIPTS_SRC) not in sys.path:
+    sys.path.insert(0, str(MODEL_SCRIPTS_SRC))
+
+
+# ============================================================
+# Import deformation pipeline
+# ============================================================
+
+try:
+    from app.pipeline import deform_organ, DEFAULT_DEBUG_DIR
+except Exception as e:
+    raise RuntimeError(
+        "Could not import deformation pipeline. "
+        "Check that backend/deform/app/pipeline.py exists and imports correctly."
+    ) from e
+
+
+# ============================================================
+# Import AI predictor from model_scripts
+# ============================================================
+
+PREDICTOR_AVAILABLE = True
+CLASSIFIER = None
+
+try:
+    from biosketch_classifier.predictor import OrganClassifier
+
+    CHECKPOINT_PATH = (
+        MODEL_SCRIPTS_ROOT
+        / "checkpoints"
+        / "organ_classifier"
+        / "best_model.pt"
+    )
+
+    if not CHECKPOINT_PATH.exists() or CHECKPOINT_PATH.stat().st_size == 0:
+        raise FileNotFoundError(
+            f"Classifier checkpoint is missing or empty: {CHECKPOINT_PATH}"
+        )
+
+    CLASSIFIER = OrganClassifier(
+        checkpoint_path=CHECKPOINT_PATH,
+        confidence_threshold=0.65,
+        use_scan_preprocessing=True,
+    )
+
+except Exception as e:
+    PREDICTOR_AVAILABLE = False
+    CLASSIFIER = None
+    print(f"[WARNING] Organ classifier could not be loaded: {e}")
+
+
+# ============================================================
+# FastAPI app
+# ============================================================
+
 app = FastAPI(title="BioSketch-3D API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # okay for college/demo; restrict later if needed
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# =========================
-# LOAD MODEL (ONLY ONCE)
-# =========================
-MODEL_PATH = "biosketch_model.pt"
 
-model = efficientnet_b0()
-num_features = model.classifier[1].in_features
-model.classifier[1] = nn.Linear(num_features, 2)
+# Serve generated GLB files to frontend.
+app.mount(
+    "/outputs",
+    StaticFiles(directory=str(OUTPUTS_DIR)),
+    name="outputs",
+)
 
-model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device('cpu')))
-model.eval()
+# Serve presentation/debug images if needed.
+app.mount(
+    "/presentation_debug",
+    StaticFiles(directory=str(DEFAULT_DEBUG_DIR)),
+    name="presentation_debug",
+)
 
-# Class labels
-classes = ['brain', 'hibiscus']
 
-# =========================
-# TRANSFORM (same as test.py)
-# =========================
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406],
-                         [0.229, 0.224, 0.225])
-])
+# ============================================================
+# Helpers
+# ============================================================
 
-# =========================
-# OPTIONAL: OpenCV preprocessing
-# =========================
-def preprocess_for_ai(img):
-    height, width = img.shape[:2]
+VALID_ORGANS = {"heart", "brain", "lungs"}
 
-    if width > 1000:
-        scale = 1000 / width
-        img = cv2.resize(img, (int(width * scale), int(height * scale)))
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+def _file_status(path: Path) -> Dict[str, Any]:
+    """Small diagnostics helper used by /api/health."""
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "size_bytes": path.stat().st_size if path.exists() else 0,
+    }
 
-    thresh = cv2.adaptiveThreshold(
-        blurred, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        21, 7
+
+def _asset_status() -> Dict[str, Any]:
+    model_dir = DEFORM_ROOT / "assets" / "3d_models"
+    checkpoint_path = (
+        MODEL_SCRIPTS_ROOT / "checkpoints" / "organ_classifier" / "best_model.pt"
     )
 
-    inverted = cv2.bitwise_not(thresh)
-    contours, _ = cv2.findContours(inverted, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return {
+        "checkpoint": _file_status(checkpoint_path),
+        "models": {
+            organ: _file_status(model_dir / f"{organ}.glb")
+            for organ in sorted(VALID_ORGANS)
+        },
+    }
 
-    if contours:
-        largest = max(contours, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(largest)
-        padding = 20
-        x1 = max(0, x - padding)
-        y1 = max(0, y - padding)
-        x2 = min(thresh.shape[1], x + w + padding)
-        y2 = min(thresh.shape[0], y + h + padding)
-        cropped = thresh[y1:y2, x1:x2]
-    else:
-        cropped = thresh
 
-    resized = cv2.resize(cropped, (224, 224))
-    rgb = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
+def _normalize_organ_name(value: str) -> str:
+    """
+    Normalize classifier/manual label to expected organ name.
+    """
+    if value is None:
+        raise ValueError("Organ name is missing.")
 
-    return rgb
+    organ = str(value).lower().strip()
 
-# =========================
-# API ROUTE
-# =========================
-@app.post("/api/classify-sketch")
-async def classify_sketch(file: UploadFile = File(...)):
+    aliases = {
+        "lung": "lungs",
+        "lungs": "lungs",
+        "heart": "heart",
+        "brain": "brain",
+    }
 
-    if not file.content_type.startswith("image/"):
-        return {"status": "error", "message": "Invalid file type"}
+    if organ not in aliases:
+        raise ValueError(
+            f"Invalid organ '{value}'. Expected one of: heart, brain, lungs."
+        )
+
+    return aliases[organ]
+
+
+def _extract_prediction_result(prediction_output: Any) -> Dict[str, Any]:
+    """
+    Supports different predictor return styles.
+
+    Accepted:
+        "heart"
+
+        {"organ": "heart", "confidence": 95.2}
+
+        {"prediction": "heart", "confidence": 95.2}
+
+        {"class": "heart", "probability": 0.95}
+    """
+    if isinstance(prediction_output, str):
+        organ = _normalize_organ_name(prediction_output)
+        return {
+            "organ": organ,
+            "confidence": None,
+            "raw": prediction_output,
+        }
+
+    if isinstance(prediction_output, dict):
+        organ_value = (
+            prediction_output.get("organ")
+            or prediction_output.get("prediction")
+            or prediction_output.get("class")
+            or prediction_output.get("label")
+        )
+
+        organ = _normalize_organ_name(organ_value)
+
+        confidence = (
+            prediction_output.get("confidence")
+            or prediction_output.get("probability")
+            or prediction_output.get("score")
+        )
+
+        return {
+            "organ": organ,
+            "confidence": confidence,
+            "raw": prediction_output,
+        }
+
+    raise ValueError(
+        "predict_organ(...) must return either a string or a dictionary."
+    )
+
+
+def _predict_from_model_scripts(sketch_path: str) -> Dict[str, Any]:
+    """
+    Calls model_scripts/src/biosketch_classifier/predictor.py.
+    """
+    if not PREDICTOR_AVAILABLE or CLASSIFIER is None:
+        raise RuntimeError(
+            "Organ classifier is not available. "
+            "Check model_scripts/src/biosketch_classifier/predictor.py "
+            "and the checkpoint path."
+        )
+
+    prediction_output = CLASSIFIER.predict(sketch_path)
+    return _extract_prediction_result(prediction_output)
+
+
+def _safe_file_extension(filename: str, content_type: Optional[str]) -> str:
+    """
+    Choose safe image extension.
+    """
+    suffix = Path(filename or "").suffix.lower()
+
+    if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
+        return suffix
+
+    if content_type == "image/png":
+        return ".png"
+
+    if content_type == "image/webp":
+        return ".webp"
+
+    return ".jpg"
+
+
+async def _save_uploaded_image(file: UploadFile) -> Path:
+    """
+    Save uploaded sketch to backend/uploads.
+    """
+    if file.content_type and not file.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Please upload an image.",
+        )
 
     contents = await file.read()
-    nparr = np.frombuffer(contents, np.uint8)
-    raw_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-    # Preprocess image
-    processed_img = preprocess_for_ai(raw_img)
+    if not contents:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is empty.",
+        )
 
-    # Save debug image
-    os.makedirs("debug_results", exist_ok=True)
-    cv2.imwrite("debug_results/last_processed.jpg", processed_img)
+    ext = _safe_file_extension(file.filename, file.content_type)
+    filename = f"sketch_{uuid.uuid4().hex}{ext}"
 
-    # Convert to PIL
-    pil_image = Image.fromarray(processed_img)
+    save_path = UPLOADS_DIR / filename
 
-    # Apply transforms
-    input_tensor = transform(pil_image).unsqueeze(0)
+    with open(save_path, "wb") as f:
+        f.write(contents)
 
-    # Predict
-    with torch.no_grad():
-        output = model(input_tensor)
-        probabilities = torch.nn.functional.softmax(output[0], dim=0)
-        confidence, predicted_idx = torch.max(probabilities, 0)
+    return save_path
 
-    prediction = classes[predicted_idx.item()]
-    confidence_score = round(confidence.item() * 100, 2)
+
+def _url_for_file(request: Request, file_path: Optional[str], base_dir: Path, route_prefix: str) -> Optional[str]:
+    """
+    Convert local file path into frontend-accessible URL.
+    """
+    if not file_path:
+        return None
+
+    path = Path(file_path).resolve()
+    base = base_dir.resolve()
+
+    try:
+        relative = path.relative_to(base).as_posix()
+    except ValueError:
+        return None
+
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}/{route_prefix}/{relative}"
+
+
+def _build_metrics_response(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Return only frontend/report-friendly metrics.
+    """
+    return {
+        "rms_before": result.get("rms_before"),
+        "rms_after": result.get("rms_after"),
+        "rms_improvement_percent": result.get("rms_improvement_percent"),
+        "similarity_before_percent": result.get("similarity_before_percent"),
+        "similarity_after_percent": result.get("similarity_after_percent"),
+        "mean_deformation_percent": result.get("mean_deformation_percent"),
+        "max_deformation_percent": result.get("max_deformation_percent"),
+        "mean_depth_deformation_percent": result.get("mean_depth_deformation_percent"),
+        "max_depth_deformation_percent": result.get("max_depth_deformation_percent"),
+    }
+
+
+# ============================================================
+# Routes
+# ============================================================
+
+@app.get("/")
+def root():
+    return {
+        "status": "success",
+        "message": "BioSketch-3D backend is running.",
+    }
+
+
+@app.get("/api/health")
+def health():
+    return {
+        "status": "success",
+        "backend": "running",
+        "predictor_available": PREDICTOR_AVAILABLE,
+        "valid_organs": sorted(list(VALID_ORGANS)),
+        "assets": _asset_status(),
+        "endpoints": {
+            "main_pipeline": "/api/deform-sketch",
+            "classifier_only": "/api/classify-sketch",
+            "outputs": "/outputs/{generated_file.glb}",
+        },
+    }
+
+
+@app.post("/api/classify-sketch")
+async def classify_sketch(file: UploadFile = File(...)):
+    """
+    Compatibility / quick-test endpoint.
+
+    The connected frontend uses /api/deform-sketch because it needs the final
+    GLB, but this route is useful for testing only the CNN classifier.
+    """
+    sketch_path = await _save_uploaded_image(file)
+
+    try:
+        prediction_info = _predict_from_model_scripts(str(sketch_path))
+        predicted_organ = prediction_info["organ"]
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Organ prediction failed: {str(e)}",
+        )
 
     return {
         "status": "success",
-        "prediction": prediction,
-        "confidence": confidence_score,
-        "message": "Real AI prediction complete"
+        "organ": predicted_organ,
+        "prediction": predicted_organ,
+        "confidence": prediction_info.get("confidence"),
+        "raw_prediction": prediction_info.get("raw"),
+    }
+
+
+@app.post("/api/deform-sketch")
+async def deform_sketch(
+    request: Request,
+    file: UploadFile = File(...),
+    organ: Optional[str] = Form(None),
+    save_debug: bool = Form(True),
+):
+    """
+    Main frontend endpoint.
+
+    Frontend sends:
+        file: sketch image
+
+    Optional:
+        organ: heart / brain / lungs
+
+    If organ is not provided:
+        backend uses model_scripts/predictor.py to classify the sketch.
+
+    Returns:
+        model_url: frontend-loadable URL to deformed GLB
+        organ: predicted/selected organ
+        metrics: deformation result metrics
+    """
+
+    # 1. Save uploaded sketch.
+    sketch_path = await _save_uploaded_image(file)
+
+    # 2. Get organ from manual input or classifier.
+    try:
+        if organ:
+            normalized_organ = _normalize_organ_name(organ)
+            prediction_info = {
+                "organ": normalized_organ,
+                "confidence": None,
+                "source": "manual",
+            }
+        else:
+            prediction_info = _predict_from_model_scripts(str(sketch_path))
+            prediction_info["source"] = "model_scripts"
+
+        predicted_organ = prediction_info["organ"]
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Organ prediction failed: {str(e)}",
+        )
+
+    # 3. Prepare exact output path.
+    output_filename = f"{predicted_organ}_{uuid.uuid4().hex}_deformed.glb"
+    output_path = OUTPUTS_DIR / output_filename
+
+    # 4. Run deterministic deformation pipeline.
+    try:
+        result = deform_organ(
+            sketch_path=str(sketch_path),
+            organ=predicted_organ,
+            output_path=str(output_path),
+            save_debug=save_debug,
+            apply_debug_colors=False,
+            log_result=True,
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Deformation pipeline failed: {str(e)}",
+        )
+
+    # 5. Build URLs for frontend.
+    model_url = _url_for_file(
+        request=request,
+        file_path=result.get("output_path"),
+        base_dir=OUTPUTS_DIR,
+        route_prefix="outputs",
+    )
+
+    debug_url = _url_for_file(
+        request=request,
+        file_path=result.get("debug_path"),
+        base_dir=DEFAULT_DEBUG_DIR,
+        route_prefix="presentation_debug",
+    )
+
+    sketch_debug_url = _url_for_file(
+        request=request,
+        file_path=result.get("sketch_debug_path"),
+        base_dir=DEFAULT_DEBUG_DIR,
+        route_prefix="presentation_debug",
+    )
+
+    return {
+        "status": "success",
+        "message": "Sketch classified and deformed successfully.",
+        "organ": predicted_organ,
+        "prediction": {
+            "organ": predicted_organ,
+            "confidence": prediction_info.get("confidence"),
+            "source": prediction_info.get("source"),
+        },
+        "model_url": model_url,
+        "output_filename": Path(result["output_path"]).name,
+        "debug": {
+            "correspondence_url": debug_url,
+            "sketch_border_url": sketch_debug_url,
+        },
+        "metrics": _build_metrics_response(result),
+    }
+
+
+@app.get("/api/download/{filename}")
+def download_output(filename: str):
+    """
+    Optional direct download endpoint for a generated GLB.
+    """
+    file_path = OUTPUTS_DIR / filename
+
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="File not found.",
+        )
+
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type="model/gltf-binary",
+    )
+
+
+@app.get("/api/export-results-table")
+def export_results_table():
+    """
+    Optional endpoint to export the accumulated CSV table.
+    """
+    try:
+        from app.result_table import export_csv
+        csv_path = export_csv()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not export CSV: {str(e)}",
+        )
+
+    return {
+        "status": "success",
+        "csv_path": csv_path,
     }

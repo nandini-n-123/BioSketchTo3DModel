@@ -1,7 +1,190 @@
-brain_env/
-dataset/
-*.pt
-*.exe
-*.png
-*.jpg
+# ============================================================
+# BioSketch3D .gitignore
+# Covers React/Vite frontend, FastAPI backend, Python model scripts,
+# runtime uploads/outputs, OS/editor files, and large ML/3D assets.
+# ============================================================
+
+# ----------------------------
+# OS / editor
+# ----------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*.tmp
+*.temp
+*.log
+
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+.idea/
+
+model_scripts/.vscode/
+# ----------------------------
+# Environment files / secrets
+# ----------------------------
+.env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# ----------------------------
+# Python caches / build files
+# ----------------------------
 __pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.cache/
+
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ----------------------------
+# Python virtual environments
+# ----------------------------
+.venv/
+venv/
+env/
+ENV/
+backend/.venv/
+backend/venv/
+model_scripts/.venv/
+model_scripts/venv/
+brain_env/
+
+# ----------------------------
+# Jupyter / notebooks
+# ----------------------------
+.ipynb_checkpoints/
+
+# ----------------------------
+# Node / React / Vite frontend
+# ----------------------------
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+frontend/.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Keep lock files committed for reproducible installs
+!frontend/package-lock.json
+!frontend/package.json
+
+# ----------------------------
+# Backend runtime files
+# ----------------------------
+backend/uploads/
+backend/outputs/
+backend/tmp/
+backend/temp/
+
+# Keep folder placeholders if you add them
+!backend/uploads/.gitkeep
+!backend/outputs/.gitkeep
+
+# ----------------------------
+# Deformation debug/runtime outputs
+# ----------------------------
+backend/deform/presentation_debug/*.png
+backend/deform/presentation_debug/*.jpg
+backend/deform/presentation_debug/*.jpeg
+backend/deform/presentation_debug/*.webp
+backend/deform/presentation_debug/result_tables/*.csv
+backend/deform/presentation_debug/result_tables/*.jsonl
+
+# Keep directory placeholders/docs if needed
+!backend/deform/presentation_debug/.gitkeep
+!backend/deform/presentation_debug/result_tables/.gitkeep
+
+# ----------------------------
+# Datasets and training artifacts
+# ----------------------------
+dataset/
+datasets/
+data/raw/
+data/processed/
+model_scripts/data/raw/
+model_scripts/data/processed/
+model_scripts/reports/
+model_scripts/runs/
+model_scripts/wandb/
+
+# Optional: keep split metadata if your team wants reproducible training splits
+# Remove these ignore rules if you want to commit them.
+# model_scripts/data/splits/
+# !model_scripts/data/splits/manifest.csv
+# !model_scripts/data/splits/classes.json
+
+# ----------------------------
+# Large ML checkpoints
+# ----------------------------
+
+*.pth
+*.ckpt
+*.onnx
+*.h5
+*.pkl
+*.joblib
+
+# Keep placeholder files if you create them
+!model_scripts/checkpoints/.gitkeep
+!model_scripts/checkpoints/organ_classifier/.gitkeep
+!model_scripts/checkpoints/organ_classifier/README.md
+
+# ----------------------------
+# Large 3D model assets
+# ----------------------------
+*.glb
+*.gltf
+*.obj
+*.fbx
+*.stl
+*.ply
+*.blend
+
+# Keep placeholder files/docs in asset folders
+!backend/deform/assets/.gitkeep
+!backend/deform/assets/3d_models/.gitkeep
+!backend/deform/assets/3d_models/README.md
+!frontend/public/models/.gitkeep
+!frontend/public/models/README.md
+
+# ----------------------------
+# Generated images/videos from experiments
+# Avoid ignoring all PNG/JPG globally because frontend icons/assets may be needed.
+# Put generated experiment images inside ignored folders instead.
+# ----------------------------
+outputs/
+reports/
+experiments/
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# ----------------------------
+# Executables / installers
+# ----------------------------
+*.exe
+*.msi
+*.dmg
+*.pkg
