@@ -1,6 +1,7 @@
 import os
 import sys
 import uuid
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -398,10 +399,15 @@ async def deform_sketch(
         metrics: deformation result metrics
     """
 
+    request_start_time = time.perf_counter()
+
     # 1. Save uploaded sketch.
+    upload_save_start_time = time.perf_counter()
     sketch_path = await _save_uploaded_image(file)
+    upload_save_time_ms = round((time.perf_counter() - upload_save_start_time) * 1000, 2)
 
     # 2. Get organ from manual input or classifier.
+    prediction_start_time = time.perf_counter()
     try:
         if organ:
             normalized_organ = _normalize_organ_name(organ)
@@ -422,11 +428,14 @@ async def deform_sketch(
             detail=f"Organ prediction failed: {str(e)}",
         )
 
+    prediction_time_ms = round((time.perf_counter() - prediction_start_time) * 1000, 2)
+
     # 3. Prepare exact output path.
     output_filename = f"{predicted_organ}_{uuid.uuid4().hex}_deformed.glb"
     output_path = OUTPUTS_DIR / output_filename
 
     # 4. Run deterministic deformation pipeline.
+    deformation_start_time = time.perf_counter()
     try:
         result = deform_organ(
             sketch_path=str(sketch_path),
@@ -442,6 +451,8 @@ async def deform_sketch(
             status_code=500,
             detail=f"Deformation pipeline failed: {str(e)}",
         )
+
+    deformation_time_ms = round((time.perf_counter() - deformation_start_time) * 1000, 2)
 
     # 5. Build URLs for frontend.
     model_url = _url_for_file(
@@ -465,6 +476,14 @@ async def deform_sketch(
         route_prefix="presentation_debug",
     )
 
+    if not model_url:
+        raise HTTPException(
+            status_code=500,
+            detail="Deformation completed, but backend could not build a model URL.",
+        )
+
+    processing_time_ms = round((time.perf_counter() - request_start_time) * 1000, 2)
+
     return {
         "status": "success",
         "message": "Sketch classified and deformed successfully.",
@@ -476,6 +495,13 @@ async def deform_sketch(
         },
         "model_url": model_url,
         "output_filename": Path(result["output_path"]).name,
+        "processing_time_ms": processing_time_ms,
+        "timing": {
+            "processing_time_ms": processing_time_ms,
+            "upload_save_time_ms": upload_save_time_ms,
+            "prediction_time_ms": prediction_time_ms,
+            "deformation_time_ms": deformation_time_ms,
+        },
         "debug": {
             "correspondence_url": debug_url,
             "sketch_border_url": sketch_debug_url,

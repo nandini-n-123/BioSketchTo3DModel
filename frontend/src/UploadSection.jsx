@@ -128,6 +128,14 @@ function detectSketchCropPercent(image) {
   return crop;
 }
 
+function formatMs(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "-";
+  }
+
+  return `${value} ms`;
+}
+
 function UploadSection() {
   const [file, setFile] = useState(null);
   const [imageSrc, setImageSrc] = useState(null);
@@ -143,11 +151,15 @@ function UploadSection() {
   const [completedCrop, setCompletedCrop] = useState(null);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [timing, setTiming] = useState(null);
 
   const webcamRef = useRef(null);
   const imgRef = useRef(null);
   const canvasRef = useRef(null);
   const viewerBoxRef = useRef(null);
+  const submitStartRef = useRef(null);
+  const responseReceivedRef = useRef(null);
+  const modelDisplayedRef = useRef(false);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -187,6 +199,10 @@ function UploadSection() {
     setMetrics(null);
     setDebugImages(null);
     setErrorMessage("");
+    setTiming(null);
+    submitStartRef.current = null;
+    responseReceivedRef.current = null;
+    modelDisplayedRef.current = false;
   }, []);
 
   const handleFile = useCallback(
@@ -335,6 +351,11 @@ function UploadSection() {
       return;
     }
 
+    submitStartRef.current = performance.now();
+    responseReceivedRef.current = null;
+    modelDisplayedRef.current = false;
+    setTiming(null);
+
     setLoading(true);
     setErrorMessage("");
     setStatusMessage("Submitting cropped sketch to backend...");
@@ -356,6 +377,7 @@ function UploadSection() {
       });
 
       const data = await response.json().catch(() => ({}));
+      responseReceivedRef.current = performance.now();
 
       if (!response.ok) {
         throw new Error(data.detail || "Backend failed to process the sketch.");
@@ -381,11 +403,25 @@ function UploadSection() {
         ? returnedModelUrl
         : `${API_BASE_URL}${returnedModelUrl}`;
 
+      const submitToResponseMs = Math.round(
+        responseReceivedRef.current - submitStartRef.current,
+      );
+
+      setTiming({
+        submitToResponseMs,
+        backendProcessingMs:
+          data.processing_time_ms ?? data.timing?.processing_time_ms ?? null,
+        backendPredictionMs: data.timing?.prediction_time_ms ?? null,
+        backendDeformationMs: data.timing?.deformation_time_ms ?? null,
+        glbLoadRenderMs: null,
+        totalToDisplayMs: null,
+      });
+
       setPrediction(detectedOrgan);
       setModel(finalModelUrl);
       setMetrics(data.metrics || null);
       setDebugImages(data.debug || null);
-      setStatusMessage("Sketch processed successfully.");
+      setStatusMessage("Sketch processed successfully. Loading 3D model...");
     } catch (error) {
       setErrorMessage(error.message || "Backend connection error.");
       setStatusMessage("");
@@ -393,6 +429,23 @@ function UploadSection() {
       setLoading(false);
     }
   };
+
+  const handleModelDisplayed = useCallback(() => {
+    if (!submitStartRef.current || modelDisplayedRef.current) return;
+
+    modelDisplayedRef.current = true;
+    const displayedAt = performance.now();
+
+    setTiming((previousTiming) => ({
+      ...previousTiming,
+      glbLoadRenderMs: responseReceivedRef.current
+        ? Math.round(displayedAt - responseReceivedRef.current)
+        : null,
+      totalToDisplayMs: Math.round(displayedAt - submitStartRef.current),
+    }));
+
+    setStatusMessage("3D model displayed successfully.");
+  }, []);
 
   const analyzeAnother = () => {
     if (document.fullscreenElement) {
@@ -494,7 +547,7 @@ function UploadSection() {
                   className="webcam"
                   onUserMedia={(stream) => {
                     const track = stream.getVideoTracks()[0];
-                    const settings = track.getSettings();
+                    const settings = track?.getSettings?.() || {};
 
                     setStatusMessage(
                       `Camera ready: ${settings.width || "auto"} x ${
@@ -508,6 +561,15 @@ function UploadSection() {
                     )
                   }
                 />
+
+                <div className="camera-tips">
+                  <strong>For best sketch detection:</strong>
+                  <span>Use a dark pen or marker instead of light pencil.</span>
+                  <span>
+                    Keep the paper flat and fill most of the camera frame.
+                  </span>
+                  <span>Use bright lighting and avoid shadows.</span>
+                </div>
 
                 <button type="button" className="capture-btn" onClick={capture}>
                   Capture Sketch
@@ -592,6 +654,36 @@ function UploadSection() {
                 the viewer.
               </div>
 
+              {timing && (
+                <div className="timing-box">
+                  <h3>Processing Time</h3>
+
+                  <div className="metrics-grid">
+                    <span>Submit to backend response</span>
+                    <strong>{formatMs(timing.submitToResponseMs)}</strong>
+
+                    <span>Backend total pipeline</span>
+                    <strong>{formatMs(timing.backendProcessingMs)}</strong>
+
+                    <span>Backend prediction step</span>
+                    <strong>{formatMs(timing.backendPredictionMs)}</strong>
+
+                    <span>Backend deformation step</span>
+                    <strong>{formatMs(timing.backendDeformationMs)}</strong>
+
+                    <span>GLB load/render time</span>
+                    <strong>{formatMs(timing.glbLoadRenderMs)}</strong>
+
+                    <span>Total time to display</span>
+                    <strong>
+                      {timing.totalToDisplayMs !== null
+                        ? formatMs(timing.totalToDisplayMs)
+                        : "Loading model..."}
+                    </strong>
+                  </div>
+                </div>
+              )}
+
               {metrics && (
                 <div className="metrics-box">
                   <h3>Deformation Metrics</h3>
@@ -657,7 +749,10 @@ function UploadSection() {
                 {fullscreen ? "Exit" : "Expand"}
               </button>
 
-              <ModelViewer modelUrl={model} />
+              <ModelViewer
+                modelUrl={model}
+                onModelDisplayed={handleModelDisplayed}
+              />
             </div>
           </div>
         )}

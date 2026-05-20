@@ -1,4 +1,4 @@
-import { Suspense, useMemo } from "react";
+import { Suspense, useEffect, useMemo, useRef } from "react";
 import { Canvas } from "@react-three/fiber";
 import {
   ContactShadows,
@@ -10,8 +10,31 @@ import {
 } from "@react-three/drei";
 import * as THREE from "three";
 
-function NormalizedModel({ modelUrl }) {
+function NormalizedModel({ modelUrl, onModelDisplayed }) {
   const { scene } = useGLTF(modelUrl);
+  const reportedRef = useRef(false);
+
+  useEffect(() => {
+    reportedRef.current = false;
+  }, [modelUrl]);
+
+  useEffect(() => {
+    if (!scene || reportedRef.current) return;
+
+    let frame2 = null;
+
+    const frame1 = requestAnimationFrame(() => {
+      frame2 = requestAnimationFrame(() => {
+        reportedRef.current = true;
+        onModelDisplayed?.();
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(frame1);
+      if (frame2) cancelAnimationFrame(frame2);
+    };
+  }, [scene, modelUrl, onModelDisplayed]);
 
   const { clonedScene, scale, position } = useMemo(() => {
     const cloned = scene.clone(true);
@@ -64,7 +87,7 @@ function LoadingFallback() {
   );
 }
 
-function ModelViewer({ modelUrl, src }) {
+function ModelViewer({ modelUrl, src, onModelDisplayed }) {
   const finalModelUrl = modelUrl || src;
 
   if (!finalModelUrl) {
@@ -94,7 +117,10 @@ function ModelViewer({ modelUrl, src }) {
         />
 
         <Suspense fallback={<LoadingFallback />}>
-          <NormalizedModel modelUrl={finalModelUrl} />
+          <NormalizedModel
+            modelUrl={finalModelUrl}
+            onModelDisplayed={onModelDisplayed}
+          />
           <Environment preset="studio" />
           <ContactShadows
             position={[0, -1.25, 0]}
