@@ -1,7 +1,8 @@
-import os
+import json
 import sys
 import uuid
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -41,6 +42,35 @@ if str(MODEL_SCRIPTS_SRC) not in sys.path:
 
 
 # ============================================================
+# Project constants
+# ============================================================
+
+VALID_ORGANS = {"heart", "brain", "lungs"}
+
+# Auto-detected sketches must reach this confidence before the backend deforms
+# a 3D model. Increase this value if unsupported sketches are still passing.
+# Decrease it if genuine brain/heart/lungs sketches are being rejected too often.
+MIN_AUTO_CONFIDENCE = 0.60
+
+UNSUPPORTED_LABELS = {
+    "unsupported",
+    "unknown",
+    "other",
+    "none",
+    "not_supported",
+    "not supported",
+    "out_of_distribution",
+    "out of distribution",
+}
+
+UNSUPPORTED_ORGAN_MESSAGE = (
+    "Sorry, this sketch does not match the organs currently supported by "
+    "BioSketch3D. At present, the system supports only Brain, Heart, and Lungs "
+    "because validated 3D models are available only for these organs."
+)
+
+
+# ============================================================
 # Import deformation pipeline
 # ============================================================
 
@@ -51,6 +81,12 @@ except Exception as e:
         "Could not import deformation pipeline. "
         "Check that backend/deform/app/pipeline.py exists and imports correctly."
     ) from e
+
+
+# Timing logs are stored with the existing presentation/debug outputs.
+TIMING_LOG_DIR = Path(DEFAULT_DEBUG_DIR) / "timing_logs"
+TIMING_LOG_PATH = TIMING_LOG_DIR / "timing_results.jsonl"
+TIMING_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
@@ -109,7 +145,7 @@ app.mount(
     name="outputs",
 )
 
-# Serve presentation/debug images if needed.
+# Serve presentation/debug images and timing logs if needed.
 app.mount(
     "/presentation_debug",
     StaticFiles(directory=str(DEFAULT_DEBUG_DIR)),
@@ -120,9 +156,6 @@ app.mount(
 # ============================================================
 # Helpers
 # ============================================================
-
-VALID_ORGANS = {"heart", "brain", "lungs"}
-
 
 def _file_status(path: Path) -> Dict[str, Any]:
     """Small diagnostics helper used by /api/health."""
@@ -150,7 +183,8 @@ def _asset_status() -> Dict[str, Any]:
 
 def _normalize_organ_name(value: str) -> str:
     """
-    Normalize classifier/manual label to expected organ name.
+    Normalize manual labels to expected organ names.
+    This is used for manual organ selection and known classifier labels.
     """
     if value is None:
         raise ValueError("Organ name is missing.")
@@ -172,6 +206,31 @@ def _normalize_organ_name(value: str) -> str:
     return aliases[organ]
 
 
+def _confidence_to_float(confidence: Any) -> Optional[float]:
+    """
+    Converts confidence into 0.0 - 1.0 range.
+
+    Supports:
+        0.82
+        "0.82"
+        82
+        "82%"
+    """
+    if confidence is None:
+        return None
+
+    try:
+        value = str(confidence).replace("%", "").strip()
+        value = float(value)
+    except Exception:
+        return None
+
+    if value > 1:
+        value = value / 100.0
+
+    return max(0.0, min(1.0, value))
+
+
 def _extract_prediction_result(prediction_output: Any) -> Dict[str, Any]:
     """
     Supports different predictor return styles.
@@ -184,8 +243,22 @@ def _extract_prediction_result(prediction_output: Any) -> Dict[str, Any]:
         {"prediction": "heart", "confidence": 95.2}
 
         {"class": "heart", "probability": 0.95}
+
+        {"organ": "unsupported", "confidence": 0.41}
+
+    If the classifier ever returns an unexpected label such as "kidney",
+    it is treated as unsupported instead of being forced into deformation.
     """
     if isinstance(prediction_output, str):
+        raw_label = prediction_output.lower().strip()
+
+        if raw_label in UNSUPPORTED_LABELS or raw_label not in VALID_ORGANS:
+            return {
+                "organ": "unsupported",
+                "confidence": None,
+                "raw": prediction_output,
+            }
+
         organ = _normalize_organ_name(prediction_output)
         return {
             "organ": organ,
@@ -201,13 +274,18 @@ def _extract_prediction_result(prediction_output: Any) -> Dict[str, Any]:
             or prediction_output.get("label")
         )
 
-        organ = _normalize_organ_name(organ_value)
-
         confidence = (
             prediction_output.get("confidence")
             or prediction_output.get("probability")
             or prediction_output.get("score")
         )
+
+        raw_label = str(organ_value).lower().strip() if organ_value is not None else ""
+
+        if raw_label in UNSUPPORTED_LABELS or raw_label not in VALID_ORGANS:
+            organ = "unsupported"
+        else:
+            organ = _normalize_organ_name(organ_value)
 
         return {
             "organ": organ,
@@ -233,6 +311,47 @@ def _predict_from_model_scripts(sketch_path: str) -> Dict[str, Any]:
 
     prediction_output = CLASSIFIER.predict(sketch_path)
     return _extract_prediction_result(prediction_output)
+
+
+def _build_unsupported_detail(
+    prediction_info: Dict[str, Any],
+    prediction_time_ms: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Returns a structured unsupported-organ error if the auto classifier is not
+    confident enough or if it returns an unsupported/unknown label.
+
+    This check only applies to auto-detection. Manual organ selection is treated
+    as an intentional override by the user.
+    """
+    if prediction_info.get("source") != "model_scripts":
+        return None
+
+    predicted_organ = prediction_info.get("organ")
+    confidence_float = _confidence_to_float(prediction_info.get("confidence"))
+
+    is_unknown_label = predicted_organ not in VALID_ORGANS
+    is_low_confidence = (
+        confidence_float is not None and confidence_float < MIN_AUTO_CONFIDENCE
+    )
+
+    if not is_unknown_label and not is_low_confidence:
+        return None
+
+    return {
+        "code": "UNSUPPORTED_ORGAN",
+        "message": UNSUPPORTED_ORGAN_MESSAGE,
+        "predicted_organ": predicted_organ,
+        "confidence_percent": (
+            round(confidence_float * 100, 2)
+            if confidence_float is not None
+            else None
+        ),
+        "minimum_required_percent": round(MIN_AUTO_CONFIDENCE * 100, 2),
+        "supported_organs": sorted(list(VALID_ORGANS)),
+        "prediction_time_ms": prediction_time_ms,
+        "raw_prediction": prediction_info.get("raw"),
+    }
 
 
 def _safe_file_extension(filename: str, content_type: Optional[str]) -> str:
@@ -282,7 +401,12 @@ async def _save_uploaded_image(file: UploadFile) -> Path:
     return save_path
 
 
-def _url_for_file(request: Request, file_path: Optional[str], base_dir: Path, route_prefix: str) -> Optional[str]:
+def _url_for_file(
+    request: Request,
+    file_path: Optional[str],
+    base_dir: Path,
+    route_prefix: str,
+) -> Optional[str]:
     """
     Convert local file path into frontend-accessible URL.
     """
@@ -318,6 +442,21 @@ def _build_metrics_response(result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _append_timing_log(record: Dict[str, Any]) -> None:
+    """
+    Store one backend timing record as JSONL.
+    JSONL = one JSON object per line, useful for experiment logs/report analysis.
+    """
+    try:
+        TIMING_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+        with open(TIMING_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    except Exception as e:
+        print(f"[WARNING] Could not write timing log: {e}")
+
+
 # ============================================================
 # Routes
 # ============================================================
@@ -337,7 +476,12 @@ def health():
         "backend": "running",
         "predictor_available": PREDICTOR_AVAILABLE,
         "valid_organs": sorted(list(VALID_ORGANS)),
+        "minimum_auto_confidence_percent": round(MIN_AUTO_CONFIDENCE * 100, 2),
         "assets": _asset_status(),
+        "timing_log": {
+            "path": str(TIMING_LOG_PATH),
+            "exists": TIMING_LOG_PATH.exists(),
+        },
         "endpoints": {
             "main_pipeline": "/api/deform-sketch",
             "classifier_only": "/api/classify-sketch",
@@ -359,6 +503,8 @@ async def classify_sketch(file: UploadFile = File(...)):
     try:
         prediction_info = _predict_from_model_scripts(str(sketch_path))
         predicted_organ = prediction_info["organ"]
+        prediction_info["source"] = "model_scripts"
+        unsupported_detail = _build_unsupported_detail(prediction_info)
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -369,6 +515,8 @@ async def classify_sketch(file: UploadFile = File(...)):
         "status": "success",
         "organ": predicted_organ,
         "prediction": predicted_organ,
+        "is_supported": unsupported_detail is None,
+        "unsupported_detail": unsupported_detail,
         "confidence": prediction_info.get("confidence"),
         "raw_prediction": prediction_info.get("raw"),
     }
@@ -393,13 +541,19 @@ async def deform_sketch(
     If organ is not provided:
         backend uses model_scripts/predictor.py to classify the sketch.
 
+    If auto-detection confidence is too low or the sketch is unsupported:
+        backend returns HTTP 422 and does not run deformation.
+
     Returns:
         model_url: frontend-loadable URL to deformed GLB
         organ: predicted/selected organ
         metrics: deformation result metrics
+        timing: backend timing breakdown
     """
 
+    request_id = uuid.uuid4().hex
     request_start_time = time.perf_counter()
+    timestamp = datetime.now().isoformat(timespec="seconds")
 
     # 1. Save uploaded sketch.
     upload_save_start_time = time.perf_counter()
@@ -408,6 +562,7 @@ async def deform_sketch(
 
     # 2. Get organ from manual input or classifier.
     prediction_start_time = time.perf_counter()
+
     try:
         if organ:
             normalized_organ = _normalize_organ_name(organ)
@@ -415,6 +570,7 @@ async def deform_sketch(
                 "organ": normalized_organ,
                 "confidence": None,
                 "source": "manual",
+                "raw": organ,
             }
         else:
             prediction_info = _predict_from_model_scripts(str(sketch_path))
@@ -430,12 +586,41 @@ async def deform_sketch(
 
     prediction_time_ms = round((time.perf_counter() - prediction_start_time) * 1000, 2)
 
+    unsupported_detail = _build_unsupported_detail(
+        prediction_info=prediction_info,
+        prediction_time_ms=prediction_time_ms,
+    )
+
+    if unsupported_detail is not None:
+        processing_time_ms = round((time.perf_counter() - request_start_time) * 1000, 2)
+
+        _append_timing_log(
+            {
+                "request_id": request_id,
+                "timestamp": timestamp,
+                "status": "unsupported",
+                "organ": predicted_organ,
+                "prediction_source": prediction_info.get("source"),
+                "confidence": prediction_info.get("confidence"),
+                "input_filename": sketch_path.name,
+                "output_filename": None,
+                "upload_save_time_ms": upload_save_time_ms,
+                "prediction_time_ms": prediction_time_ms,
+                "deformation_time_ms": None,
+                "processing_time_ms": processing_time_ms,
+                "reason": unsupported_detail,
+            }
+        )
+
+        raise HTTPException(status_code=422, detail=unsupported_detail)
+
     # 3. Prepare exact output path.
     output_filename = f"{predicted_organ}_{uuid.uuid4().hex}_deformed.glb"
     output_path = OUTPUTS_DIR / output_filename
 
     # 4. Run deterministic deformation pipeline.
     deformation_start_time = time.perf_counter()
+
     try:
         result = deform_organ(
             sketch_path=str(sketch_path),
@@ -465,14 +650,14 @@ async def deform_sketch(
     debug_url = _url_for_file(
         request=request,
         file_path=result.get("debug_path"),
-        base_dir=DEFAULT_DEBUG_DIR,
+        base_dir=Path(DEFAULT_DEBUG_DIR),
         route_prefix="presentation_debug",
     )
 
     sketch_debug_url = _url_for_file(
         request=request,
         file_path=result.get("sketch_debug_path"),
-        base_dir=DEFAULT_DEBUG_DIR,
+        base_dir=Path(DEFAULT_DEBUG_DIR),
         route_prefix="presentation_debug",
     )
 
@@ -483,10 +668,37 @@ async def deform_sketch(
         )
 
     processing_time_ms = round((time.perf_counter() - request_start_time) * 1000, 2)
+    metrics = _build_metrics_response(result)
+
+    timing = {
+        "processing_time_ms": processing_time_ms,
+        "upload_save_time_ms": upload_save_time_ms,
+        "prediction_time_ms": prediction_time_ms,
+        "deformation_time_ms": deformation_time_ms,
+    }
+
+    _append_timing_log(
+        {
+            "request_id": request_id,
+            "timestamp": timestamp,
+            "status": "success",
+            "organ": predicted_organ,
+            "prediction_source": prediction_info.get("source"),
+            "confidence": prediction_info.get("confidence"),
+            "input_filename": sketch_path.name,
+            "output_filename": Path(result["output_path"]).name,
+            **timing,
+            "rms_before": result.get("rms_before"),
+            "rms_after": result.get("rms_after"),
+            "similarity_after_percent": result.get("similarity_after_percent"),
+            "mean_deformation_percent": result.get("mean_deformation_percent"),
+        }
+    )
 
     return {
         "status": "success",
         "message": "Sketch classified and deformed successfully.",
+        "request_id": request_id,
         "organ": predicted_organ,
         "prediction": {
             "organ": predicted_organ,
@@ -496,17 +708,12 @@ async def deform_sketch(
         "model_url": model_url,
         "output_filename": Path(result["output_path"]).name,
         "processing_time_ms": processing_time_ms,
-        "timing": {
-            "processing_time_ms": processing_time_ms,
-            "upload_save_time_ms": upload_save_time_ms,
-            "prediction_time_ms": prediction_time_ms,
-            "deformation_time_ms": deformation_time_ms,
-        },
+        "timing": timing,
         "debug": {
             "correspondence_url": debug_url,
             "sketch_border_url": sketch_debug_url,
         },
-        "metrics": _build_metrics_response(result),
+        "metrics": metrics,
     }
 
 

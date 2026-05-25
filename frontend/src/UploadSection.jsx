@@ -136,6 +136,28 @@ function formatMs(value) {
   return `${value} ms`;
 }
 
+function formatConfidence(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "-";
+  }
+
+  return `${value}%`;
+}
+
+function buildBackendErrorMessage(data) {
+  const detail = data?.detail;
+
+  if (typeof detail === "string") {
+    return detail;
+  }
+
+  if (detail && typeof detail === "object") {
+    return detail.message || "Backend failed to process the sketch.";
+  }
+
+  return data?.message || "Backend failed to process the sketch.";
+}
+
 function UploadSection() {
   const [file, setFile] = useState(null);
   const [imageSrc, setImageSrc] = useState(null);
@@ -151,6 +173,7 @@ function UploadSection() {
   const [completedCrop, setCompletedCrop] = useState(null);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [unsupportedInfo, setUnsupportedInfo] = useState(null);
   const [timing, setTiming] = useState(null);
 
   const webcamRef = useRef(null);
@@ -159,7 +182,6 @@ function UploadSection() {
   const viewerBoxRef = useRef(null);
   const submitStartRef = useRef(null);
   const responseReceivedRef = useRef(null);
-  const modelDisplayedRef = useRef(false);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -199,10 +221,8 @@ function UploadSection() {
     setMetrics(null);
     setDebugImages(null);
     setErrorMessage("");
+    setUnsupportedInfo(null);
     setTiming(null);
-    submitStartRef.current = null;
-    responseReceivedRef.current = null;
-    modelDisplayedRef.current = false;
   }, []);
 
   const handleFile = useCallback(
@@ -353,9 +373,9 @@ function UploadSection() {
 
     submitStartRef.current = performance.now();
     responseReceivedRef.current = null;
-    modelDisplayedRef.current = false;
-    setTiming(null);
 
+    setTiming(null);
+    setUnsupportedInfo(null);
     setLoading(true);
     setErrorMessage("");
     setStatusMessage("Submitting cropped sketch to backend...");
@@ -380,7 +400,20 @@ function UploadSection() {
       responseReceivedRef.current = performance.now();
 
       if (!response.ok) {
-        throw new Error(data.detail || "Backend failed to process the sketch.");
+        const detail = data?.detail;
+
+        if (
+          detail &&
+          typeof detail === "object" &&
+          detail.code === "UNSUPPORTED_ORGAN"
+        ) {
+          setUnsupportedInfo(detail);
+          setStatusMessage("");
+          setErrorMessage("");
+          return;
+        }
+
+        throw new Error(buildBackendErrorMessage(data));
       }
 
       const detectedOrgan =
@@ -403,6 +436,7 @@ function UploadSection() {
         ? returnedModelUrl
         : `${API_BASE_URL}${returnedModelUrl}`;
 
+      const backendTiming = data.timing || {};
       const submitToResponseMs = Math.round(
         responseReceivedRef.current - submitStartRef.current,
       );
@@ -410,10 +444,14 @@ function UploadSection() {
       setTiming({
         submitToResponseMs,
         backendProcessingMs:
-          data.processing_time_ms ?? data.timing?.processing_time_ms ?? null,
-        backendPredictionMs: data.timing?.prediction_time_ms ?? null,
-        backendDeformationMs: data.timing?.deformation_time_ms ?? null,
-        glbLoadRenderMs: null,
+          data.processing_time_ms ??
+          backendTiming.processing_time_ms ??
+          backendTiming.backend_total_time_ms ??
+          null,
+        backendUploadSaveMs: backendTiming.upload_save_time_ms ?? null,
+        backendPredictionMs: backendTiming.prediction_time_ms ?? null,
+        backendDeformationMs: backendTiming.deformation_time_ms ?? null,
+        modelRenderMs: null,
         totalToDisplayMs: null,
       });
 
@@ -421,7 +459,7 @@ function UploadSection() {
       setModel(finalModelUrl);
       setMetrics(data.metrics || null);
       setDebugImages(data.debug || null);
-      setStatusMessage("Sketch processed successfully. Loading 3D model...");
+      setStatusMessage("Sketch processed successfully.");
     } catch (error) {
       setErrorMessage(error.message || "Backend connection error.");
       setStatusMessage("");
@@ -429,23 +467,6 @@ function UploadSection() {
       setLoading(false);
     }
   };
-
-  const handleModelDisplayed = useCallback(() => {
-    if (!submitStartRef.current || modelDisplayedRef.current) return;
-
-    modelDisplayedRef.current = true;
-    const displayedAt = performance.now();
-
-    setTiming((previousTiming) => ({
-      ...previousTiming,
-      glbLoadRenderMs: responseReceivedRef.current
-        ? Math.round(displayedAt - responseReceivedRef.current)
-        : null,
-      totalToDisplayMs: Math.round(displayedAt - submitStartRef.current),
-    }));
-
-    setStatusMessage("3D model displayed successfully.");
-  }, []);
 
   const analyzeAnother = () => {
     if (document.fullscreenElement) {
@@ -470,8 +491,9 @@ function UploadSection() {
 
             <p className="upload-subtitle">
               Capture from your laptop webcam or upload a sketch image. The app
-              will auto-crop the sketch area first, then you can adjust it
-              manually.
+              currently supports Brain, Heart, and Lungs. If another organ is
+              detected, the backend will stop before deformation instead of
+              showing a wrong 3D model.
             </p>
 
             <div className="toggle-buttons">
@@ -547,7 +569,7 @@ function UploadSection() {
                   className="webcam"
                   onUserMedia={(stream) => {
                     const track = stream.getVideoTracks()[0];
-                    const settings = track?.getSettings?.() || {};
+                    const settings = track.getSettings();
 
                     setStatusMessage(
                       `Camera ready: ${settings.width || "auto"} x ${
@@ -565,9 +587,7 @@ function UploadSection() {
                 <div className="camera-tips">
                   <strong>For best sketch detection:</strong>
                   <span>Use a dark pen or marker instead of light pencil.</span>
-                  <span>
-                    Keep the paper flat and fill most of the camera frame.
-                  </span>
+                  <span>Keep the paper flat and fill most of the frame.</span>
                   <span>Use bright lighting and avoid shadows.</span>
                 </div>
 
@@ -607,6 +627,29 @@ function UploadSection() {
             <canvas ref={canvasRef} style={{ display: "none" }} />
 
             {statusMessage && <p className="status-message">{statusMessage}</p>}
+
+            {unsupportedInfo && (
+              <div className="error-message">
+                <strong>Unsupported sketch detected.</strong>
+                <br />
+                {unsupportedInfo.message}
+                <br />
+                <br />
+                Predicted as:{" "}
+                <strong>{unsupportedInfo.predicted_organ || "unknown"}</strong>
+                <br />
+                Confidence:{" "}
+                <strong>
+                  {formatConfidence(unsupportedInfo.confidence_percent)}
+                </strong>
+                <br />
+                Minimum required confidence:{" "}
+                <strong>
+                  {formatConfidence(unsupportedInfo.minimum_required_percent)}
+                </strong>
+              </div>
+            )}
+
             {errorMessage && <p className="error-message">{errorMessage}</p>}
 
             <div className="upload-actions">
@@ -665,14 +708,17 @@ function UploadSection() {
                     <span>Backend total pipeline</span>
                     <strong>{formatMs(timing.backendProcessingMs)}</strong>
 
-                    <span>Backend prediction step</span>
+                    <span>Backend upload save</span>
+                    <strong>{formatMs(timing.backendUploadSaveMs)}</strong>
+
+                    <span>CNN/manual detection</span>
                     <strong>{formatMs(timing.backendPredictionMs)}</strong>
 
-                    <span>Backend deformation step</span>
+                    <span>Deformation pipeline</span>
                     <strong>{formatMs(timing.backendDeformationMs)}</strong>
 
-                    <span>GLB load/render time</span>
-                    <strong>{formatMs(timing.glbLoadRenderMs)}</strong>
+                    <span>GLB load/render</span>
+                    <strong>{formatMs(timing.modelRenderMs)}</strong>
 
                     <span>Total time to display</span>
                     <strong>
@@ -751,7 +797,21 @@ function UploadSection() {
 
               <ModelViewer
                 modelUrl={model}
-                onModelDisplayed={handleModelDisplayed}
+                onModelDisplayed={() => {
+                  if (!submitStartRef.current) return;
+
+                  const displayedAt = performance.now();
+
+                  setTiming((previousTiming) => ({
+                    ...previousTiming,
+                    modelRenderMs: responseReceivedRef.current
+                      ? Math.round(displayedAt - responseReceivedRef.current)
+                      : null,
+                    totalToDisplayMs: Math.round(
+                      displayedAt - submitStartRef.current,
+                    ),
+                  }));
+                }}
               />
             </div>
           </div>

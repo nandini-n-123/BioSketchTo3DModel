@@ -96,6 +96,8 @@ from app.deformation.metrics import (
 )
 
 from app.result_table import append_result
+from app.deformation.cage_visualization import export_scene_with_cage
+from app.deformation.demo_emphasis import emphasize_brainstem_from_sketch
 # ============================================================
 # Paths
 # ============================================================
@@ -241,6 +243,33 @@ def _make_sketch_debug_path(
     model_base = Path(model_path).stem
 
     return dbg_dir / f"{organ}_{model_base}_{sketch_base}_sketch_border.png"
+
+def _make_cage_debug_paths(
+    organ: str,
+    sketch_path: str,
+    model_path: str,
+    debug_dir: Optional[str] = None,
+):
+    """
+    Create before/after cage visualization paths.
+    """
+    organ = _validate_organ(organ)
+
+    if debug_dir is None:
+        dbg_dir = DEFAULT_DEBUG_DIR
+    else:
+        dbg_dir = Path(debug_dir)
+
+    cage_dir = dbg_dir / "cage_views"
+    cage_dir.mkdir(parents=True, exist_ok=True)
+
+    sketch_base = Path(sketch_path).stem
+    model_base = Path(model_path).stem
+
+    before_path = cage_dir / f"{organ}_{model_base}_{sketch_base}_before_cage.glb"
+    after_path = cage_dir / f"{organ}_{model_base}_{sketch_base}_after_cage.glb"
+
+    return before_path, after_path
 
 
 def _save_sketch_border_debug(
@@ -571,7 +600,7 @@ def deform_organ(
         # - heart: use anatomical handle constraints
         # - brain: use light constraints
         # - lungs: no part constraints; coarse global FFD works best
-        use_part_constraints = organ in {"heart", "brain"}
+        use_part_constraints = organ == "brain"
 
     print("\n=============================================")
     print("BIOSKETCH PIPELINE")
@@ -694,6 +723,28 @@ def deform_organ(
         clip=False,
     )
 
+    cage_before_path_obj = None
+    cage_after_path_obj = None
+
+    if save_debug:
+        cage_before_path_obj, cage_after_path_obj = _make_cage_debug_paths(
+            organ=organ,
+            sketch_path=str(sketch_path_obj),
+            model_path=str(model_path_obj),
+            debug_dir=debug_dir,
+        )
+
+        # This is the aligned model before deformation + original cage.
+        export_scene_with_cage(
+            scene=temp_scene,
+            cage_points=cage_points,
+            resolution=resolution,
+            output_path=cage_before_path_obj,
+            line_color=(255, 0, 0, 255),
+            point_color=(0, 255, 255, 255),
+            make_model_transparent=False,
+        )
+
     reconstructed = W @ cage_points
     recon_error = float(np.max(np.abs(reconstructed - working_vertices)))
 
@@ -797,8 +848,33 @@ def deform_organ(
     )
 
     deformed_vertices = W @ C_new
+    # Optional presentation-safe emphasis for small parts.
+# This makes the brainstem deformation visibly clear for demo/report.
+    deformed_vertices = emphasize_brainstem_from_sketch(
+    vertices_3d=deformed_vertices,
+    sketch_points_2d=sketch_points,
+    organ=organ,
+    plane_axes=PLANE_AXES,
+    depth_axis=DEPTH_AXIS,
+    strength=0.45,
+    )
 
-        # --------------------------------------------------------
+    if save_debug and cage_after_path_obj is not None:
+        after_scene = scene.copy()
+        _overwrite_scene_vertices(after_scene, deformed_vertices)
+
+        # This is the deformed model + deformed cage.
+        export_scene_with_cage(
+            scene=after_scene,
+            cage_points=C_new,
+            resolution=resolution,
+            output_path=cage_after_path_obj,
+            line_color=(0, 255, 0, 255),
+            point_color=(255, 255, 0, 255),
+            make_model_transparent=False,
+        )
+
+    # --------------------------------------------------------
     # Result analysis metrics
     # --------------------------------------------------------
 
@@ -898,7 +974,8 @@ def deform_organ(
         "output_path": str(output_path_obj),
         "debug_path": str(debug_path_obj) if debug_path_obj else None,
         "sketch_debug_path": str(sketch_debug_path_obj) if sketch_debug_path_obj else None,
-
+        "cage_before_path": str(cage_before_path_obj) if cage_before_path_obj else None,
+        "cage_after_path": str(cage_after_path_obj) if cage_after_path_obj else None,
         "rms_before": rms_before,
         "rms_after": rms_after,
         "rms_improvement_percent": fit_improvement,
@@ -934,9 +1011,9 @@ def deform_organ(
 
 if __name__ == "__main__":
     result = deform_organ(
-        sketch_path=str(ASSETS_DIR / "sketches" / "lungs3.jpg"),
-        organ="lungs",
-        model_path=str(MODELS_DIR / "lungs.glb"),
+        sketch_path=str(ASSETS_DIR / "sketches" / "test_brain.jpg"),
+        organ="brain",
+        model_path=str(MODELS_DIR / "brain.glb"),
         save_debug=True,
         apply_debug_colors=False,
     )
