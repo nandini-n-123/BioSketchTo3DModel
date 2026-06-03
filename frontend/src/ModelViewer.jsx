@@ -98,7 +98,6 @@ function ModelViewer({ modelUrl, src, onModelDisplayed }) {
     <div className="model-canvas-wrapper">
       <Canvas shadows dpr={[1, 2]} gl={{ antialias: true, alpha: false }}>
         <color attach="background" args={["#020617"]} />
-
         <PerspectiveCamera makeDefault position={[0, 0.15, 4.2]} fov={38} />
 
         <ambientLight intensity={0.65} />

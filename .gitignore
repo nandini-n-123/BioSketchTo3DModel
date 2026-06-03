@@ -1,11 +1,10 @@
 # ============================================================
 # BioSketch3D .gitignore
-# Covers React/Vite frontend, FastAPI backend, Python model scripts,
-# runtime uploads/outputs, OS/editor files, and large ML/3D assets.
+# React/Vite frontend + FastAPI backend + classifier + FFD pipeline
 # ============================================================
 
 # ----------------------------
-# OS / editor
+# OS / editor files
 # ----------------------------
 .DS_Store
 Thumbs.db
@@ -20,17 +19,20 @@ desktop.ini
 !.vscode/extensions.json
 !.vscode/settings.example.json
 .idea/
-
 model_scripts/.vscode/
+backend/deform/.vscode/
+
 # ----------------------------
 # Environment files / secrets
 # ----------------------------
 .env
 .env.*
 !.env.example
+
 frontend/.env
 frontend/.env.*
 !frontend/.env.example
+
 backend/.env
 backend/.env.*
 !backend/.env.example
@@ -67,7 +69,7 @@ model_scripts/venv/
 brain_env/
 
 # ----------------------------
-# Jupyter / notebooks
+# Jupyter
 # ----------------------------
 .ipynb_checkpoints/
 
@@ -80,64 +82,60 @@ frontend/dist/
 frontend/build/
 frontend/.vite/
 frontend/.eslintcache
+
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Keep lock files committed for reproducible installs
-!frontend/package-lock.json
+# Keep frontend dependency files committed
 !frontend/package.json
+!frontend/package-lock.json
 
 # ----------------------------
-# Backend runtime files
+# Backend runtime uploads / outputs
 # ----------------------------
 backend/uploads/
 backend/outputs/
 backend/tmp/
 backend/temp/
+backend/debug_results/
 
-# Keep folder placeholders if you add them
+# Keep empty runtime folders in Git when .gitkeep files are present
 !backend/uploads/.gitkeep
 !backend/outputs/.gitkeep
 
 # ----------------------------
-# Deformation debug/runtime outputs
+# Deformation runtime / presentation debug files
 # ----------------------------
-backend/deform/presentation_debug/*.png
-backend/deform/presentation_debug/*.jpg
-backend/deform/presentation_debug/*.jpeg
-backend/deform/presentation_debug/*.webp
-backend/deform/presentation_debug/result_tables/*.csv
-backend/deform/presentation_debug/result_tables/*.jsonl
+backend/deform/presentation_debug/*
 
-# Keep directory placeholders/docs if needed
+# Keep optional placeholders/docs
 !backend/deform/presentation_debug/.gitkeep
-!backend/deform/presentation_debug/result_tables/.gitkeep
+!backend/deform/presentation_debug/README.md
 
 # ----------------------------
-# Datasets and training artifacts
+# Training datasets and experiment artifacts
 # ----------------------------
 dataset/
 datasets/
 data/raw/
 data/processed/
+
 model_scripts/data/raw/
 model_scripts/data/processed/
 model_scripts/reports/
 model_scripts/runs/
 model_scripts/wandb/
 
-# Optional: keep split metadata if your team wants reproducible training splits
-# Remove these ignore rules if you want to commit them.
-# model_scripts/data/splits/
-# !model_scripts/data/splits/manifest.csv
-# !model_scripts/data/splits/classes.json
+reports/
+experiments/
+outputs/
 
 # ----------------------------
-# Large ML checkpoints
+# ML checkpoint files
 # ----------------------------
-
+*.pt
 *.pth
 *.ckpt
 *.onnx
@@ -145,13 +143,18 @@ model_scripts/wandb/
 *.pkl
 *.joblib
 
-# Keep placeholder files if you create them
+# The trained classifier checkpoint is required at runtime.
+# Keep this exception only when the file is small enough for GitHub
+# or when Git LFS is configured.
+!model_scripts/checkpoints/organ_classifier/best_model.pt
+
+# Optional placeholders/docs
 !model_scripts/checkpoints/.gitkeep
 !model_scripts/checkpoints/organ_classifier/.gitkeep
 !model_scripts/checkpoints/organ_classifier/README.md
 
 # ----------------------------
-# Large 3D model assets
+# 3D model assets
 # ----------------------------
 *.glb
 *.gltf
@@ -161,7 +164,14 @@ model_scripts/wandb/
 *.ply
 *.blend
 
-# Keep placeholder files/docs in asset folders
+# These validated baseline GLB files are required by the deformation pipeline.
+# Keep the exceptions if the files are small enough for GitHub
+# or when Git LFS is configured.
+!backend/deform/assets/3d_models/brain.glb
+!backend/deform/assets/3d_models/heart.glb
+!backend/deform/assets/3d_models/lungs.glb
+
+# Optional placeholders/docs
 !backend/deform/assets/.gitkeep
 !backend/deform/assets/3d_models/.gitkeep
 !backend/deform/assets/3d_models/README.md
@@ -169,13 +179,8 @@ model_scripts/wandb/
 !frontend/public/models/README.md
 
 # ----------------------------
-# Generated images/videos from experiments
-# Avoid ignoring all PNG/JPG globally because frontend icons/assets may be needed.
-# Put generated experiment images inside ignored folders instead.
+# Generated media
 # ----------------------------
-outputs/
-reports/
-experiments/
 *.mp4
 *.mov
 *.avi

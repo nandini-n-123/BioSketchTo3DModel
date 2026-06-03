@@ -1,11 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import Webcam from "react-webcam";
 import ReactCrop from "react-image-crop";
 import "react-image-crop/dist/ReactCrop.css";
 import ModelViewer from "./ModelViewer";
+import "./mobile-scan.css";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+function getApiBaseUrl() {
+  const apiUrl = new URL(window.location.href);
+  apiUrl.port = "8000";
+  apiUrl.pathname = "";
+  apiUrl.search = "";
+  apiUrl.hash = "";
+  return apiUrl.origin;
+}
+
+const API_BASE_URL = getApiBaseUrl();
+
+function isLoopbackHostname(hostname) {
+  return ["localhost", "127.0.0.1", "::1"].includes(hostname);
+}
 
 const DEFAULT_CROP = {
   unit: "%",
@@ -36,16 +50,13 @@ function detectSketchCropPercent(image) {
   const naturalWidth = image.naturalWidth;
   const naturalHeight = image.naturalHeight;
 
-  if (!naturalWidth || !naturalHeight) {
-    return DEFAULT_CROP;
-  }
+  if (!naturalWidth || !naturalHeight) return DEFAULT_CROP;
 
   const maxCanvasSide = 520;
   const scale = Math.min(
     1,
     maxCanvasSide / Math.max(naturalWidth, naturalHeight),
   );
-
   const width = Math.max(1, Math.round(naturalWidth * scale));
   const height = Math.max(1, Math.round(naturalHeight * scale));
 
@@ -54,9 +65,7 @@ function detectSketchCropPercent(image) {
   canvas.height = height;
 
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) {
-    return DEFAULT_CROP;
-  }
+  if (!ctx) return DEFAULT_CROP;
 
   ctx.drawImage(image, 0, 0, width, height);
   const { data } = ctx.getImageData(0, 0, width, height);
@@ -66,7 +75,6 @@ function detectSketchCropPercent(image) {
   let maxX = 0;
   let maxY = 0;
   let inkPixels = 0;
-
   const step = Math.max(1, Math.floor(Math.min(width, height) / 360));
 
   for (let y = 0; y < height; y += step) {
@@ -81,7 +89,6 @@ function detectSketchCropPercent(image) {
 
       const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
       const channelSpread = Math.max(r, g, b) - Math.min(r, g, b);
-
       const looksLikeInk =
         luminance < 215 && (channelSpread < 95 || luminance < 170);
 
@@ -95,9 +102,7 @@ function detectSketchCropPercent(image) {
     }
   }
 
-  if (inkPixels < 40 || minX >= maxX || minY >= maxY) {
-    return DEFAULT_CROP;
-  }
+  if (inkPixels < 40 || minX >= maxX || minY >= maxY) return DEFAULT_CROP;
 
   const boxWidth = maxX - minX;
   const boxHeight = maxY - minY;
@@ -117,44 +122,28 @@ function detectSketchCropPercent(image) {
     height: clamp(((y2 - y1) / height) * 100, 8, 100),
   };
 
-  if (crop.x + crop.width > 100) {
-    crop.width = 100 - crop.x;
-  }
-
-  if (crop.y + crop.height > 100) {
-    crop.height = 100 - crop.y;
-  }
+  if (crop.x + crop.width > 100) crop.width = 100 - crop.x;
+  if (crop.y + crop.height > 100) crop.height = 100 - crop.y;
 
   return crop;
 }
 
 function formatMs(value) {
-  if (value === null || value === undefined || Number.isNaN(value)) {
-    return "-";
-  }
-
+  if (value === null || value === undefined || Number.isNaN(value)) return "-";
   return `${value} ms`;
 }
 
 function formatConfidence(value) {
-  if (value === null || value === undefined || Number.isNaN(value)) {
-    return "-";
-  }
-
+  if (value === null || value === undefined || Number.isNaN(value)) return "-";
   return `${value}%`;
 }
 
 function buildBackendErrorMessage(data) {
   const detail = data?.detail;
-
-  if (typeof detail === "string") {
-    return detail;
-  }
-
+  if (typeof detail === "string") return detail;
   if (detail && typeof detail === "object") {
     return detail.message || "Backend failed to process the sketch.";
   }
-
   return data?.message || "Backend failed to process the sketch.";
 }
 
@@ -167,7 +156,7 @@ function UploadSection() {
   const [debugImages, setDebugImages] = useState(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [useCamera, setUseCamera] = useState(false);
+  const [inputMode, setInputMode] = useState("upload");
   const [selectedOrgan, setSelectedOrgan] = useState("auto");
   const [crop, setCrop] = useState(DEFAULT_CROP);
   const [completedCrop, setCompletedCrop] = useState(null);
@@ -175,13 +164,20 @@ function UploadSection() {
   const [errorMessage, setErrorMessage] = useState("");
   const [unsupportedInfo, setUnsupportedInfo] = useState(null);
   const [timing, setTiming] = useState(null);
+  const [mobileSessionId, setMobileSessionId] = useState("");
+  const [mobileScanUrl, setMobileScanUrl] = useState("");
+  const [mobileScanStatus, setMobileScanStatus] = useState("idle");
+  const [mobileScanError, setMobileScanError] = useState("");
+  const [mobileSessionExpires, setMobileSessionExpires] = useState(null);
 
   const webcamRef = useRef(null);
   const imgRef = useRef(null);
   const canvasRef = useRef(null);
+  const fileInputRef = useRef(null);
   const viewerBoxRef = useRef(null);
   const submitStartRef = useRef(null);
   const responseReceivedRef = useRef(null);
+  const mobilePollBusyRef = useRef(false);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -189,31 +185,9 @@ function UploadSection() {
     };
 
     document.addEventListener("fullscreenchange", handleFullscreenChange);
-
-    return () => {
+    return () =>
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
-    };
   }, []);
-
-  const toggleFullscreen = async () => {
-    const viewerElement = viewerBoxRef.current;
-
-    if (!viewerElement) return;
-
-    try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-        setFullscreen(false);
-        return;
-      }
-
-      await viewerElement.requestFullscreen();
-      setFullscreen(true);
-    } catch (error) {
-      console.error("Fullscreen failed:", error);
-      setFullscreen((current) => !current);
-    }
-  };
 
   const resetResult = useCallback(() => {
     setPrediction("");
@@ -235,37 +209,184 @@ function UploadSection() {
       }
 
       setFile(selectedFile);
+      setImageSrc(null);
       setCompletedCrop(null);
       setCrop(DEFAULT_CROP);
       resetResult();
       setStatusMessage("Image loaded. Auto-detecting sketch area...");
 
       const reader = new FileReader();
-
-      reader.onload = () => {
-        setImageSrc(reader.result);
-      };
-
-      reader.onerror = () => {
+      reader.onload = () => setImageSrc(reader.result);
+      reader.onerror = () =>
         setErrorMessage("Could not read the selected image.");
-      };
-
       reader.readAsDataURL(selectedFile);
     },
     [resetResult],
   );
 
+  useEffect(() => {
+    if (!mobileSessionId || mobileScanStatus !== "waiting") return undefined;
+
+    let cancelled = false;
+
+    const pollMobileScan = async () => {
+      if (mobilePollBusyRef.current || cancelled) return;
+      mobilePollBusyRef.current = true;
+
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/api/mobile-scan/${mobileSessionId}`,
+        );
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          throw new Error(
+            data.detail || "Phone scan session could not be checked.",
+          );
+        }
+
+        if (data.status === "received" && data.image_url) {
+          const imageResponse = await fetch(data.image_url);
+          if (!imageResponse.ok)
+            throw new Error("Laptop could not fetch the phone image.");
+
+          const blob = await imageResponse.blob();
+          const receivedFile = new File(
+            [blob],
+            `phone-sketch-${Date.now()}.jpg`,
+            { type: blob.type || "image/jpeg" },
+          );
+
+          if (cancelled) return;
+
+          handleFile(receivedFile);
+          setMobileScanStatus("received");
+          setStatusMessage(
+            "Phone-camera sketch received. Adjust the crop box if needed, then submit it.",
+          );
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setMobileScanError(
+            error.message || "Could not receive the phone sketch.",
+          );
+          setMobileScanStatus("error");
+        }
+      } finally {
+        mobilePollBusyRef.current = false;
+      }
+    };
+
+    pollMobileScan();
+    const intervalId = window.setInterval(pollMobileScan, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [mobileSessionId, mobileScanStatus, handleFile]);
+
+  const toggleFullscreen = async () => {
+    const viewerElement = viewerBoxRef.current;
+    if (!viewerElement) return;
+
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await viewerElement.requestFullscreen();
+      }
+    } catch (error) {
+      console.error("Fullscreen failed:", error);
+      setFullscreen((current) => !current);
+    }
+  };
+
+  const startMobileScanSession = async () => {
+    setMobileScanError("");
+    setMobileScanStatus("creating");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/mobile-scan/session`, {
+        method: "POST",
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.session_id) {
+        throw new Error(
+          data.detail || "Could not create a phone scan session.",
+        );
+      }
+
+      const mobileCaptureOrigin = window.location.origin;
+
+      let mobileHostname = "";
+      try {
+        mobileHostname = new URL(mobileCaptureOrigin).hostname;
+      } catch {
+        throw new Error(
+          "Invalid frontend origin. Open the application using the Vite Network URL.",
+        );
+      }
+
+      if (isLoopbackHostname(mobileHostname)) {
+        throw new Error(
+          "The QR code cannot use localhost. Open this laptop page using the Vite Network URL printed by npm run dev -- --host 0.0.0.0, such as http://192.168.x.x:5173.",
+        );
+      }
+
+      setMobileSessionId(data.session_id);
+      setMobileScanUrl(`${mobileCaptureOrigin}/mobile-scan/${data.session_id}`);
+      setMobileSessionExpires(data.expires_in_minutes ?? 10);
+      setMobileScanStatus("waiting");
+      setStatusMessage(
+        "QR code ready. Scan it using a phone connected to the same Wi-Fi network or hotspot.",
+      );
+    } catch (error) {
+      setMobileScanError(
+        error.message || "Could not create a phone scan session.",
+      );
+      setMobileScanStatus("error");
+    }
+  };
+
+  const cancelMobileScan = () => {
+    setMobileSessionId("");
+    setMobileScanUrl("");
+    setMobileScanStatus("idle");
+    setMobileScanError("");
+    setMobileSessionExpires(null);
+  };
+
+  const openFilePicker = () => {
+    setErrorMessage("");
+    fileInputRef.current?.click();
+  };
+
   const handleFileChange = (event) => {
-    handleFile(event.target.files?.[0]);
+    const selectedFile = event.target.files?.[0];
+    handleFile(selectedFile);
+
+    // Allow the same file to be selected again after Retake / Choose Again.
+    event.target.value = "";
+  };
+
+  const handleUploadAreaKeyDown = (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openFilePicker();
+    }
   };
 
   const handleDrop = (event) => {
     event.preventDefault();
+    event.stopPropagation();
     handleFile(event.dataTransfer.files?.[0]);
   };
 
   const handleDragOver = (event) => {
     event.preventDefault();
+    event.stopPropagation();
   };
 
   const removeFile = () => {
@@ -274,6 +395,11 @@ function UploadSection() {
     setCrop(DEFAULT_CROP);
     setCompletedCrop(null);
     setStatusMessage("");
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+
     resetResult();
   };
 
@@ -282,18 +408,17 @@ function UploadSection() {
 
     if (!screenshot) {
       setErrorMessage(
-        "Camera capture failed. Please allow webcam access and try again.",
+        "Camera capture failed. Allow webcam access and try again.",
       );
       return;
     }
 
-    const blob = await fetch(screenshot).then((res) => res.blob());
-
-    const capturedFile = new File([blob], `webcam-sketch-${Date.now()}.jpg`, {
-      type: "image/jpeg",
-    });
-
-    handleFile(capturedFile);
+    const blob = await fetch(screenshot).then((response) => response.blob());
+    handleFile(
+      new File([blob], `webcam-sketch-${Date.now()}.jpg`, {
+        type: "image/jpeg",
+      }),
+    );
   }, [handleFile]);
 
   const handleImageLoad = (event) => {
@@ -304,15 +429,14 @@ function UploadSection() {
     setCrop(autoCrop);
     setCompletedCrop(percentToPixelCrop(autoCrop, image));
     setStatusMessage(
-      "Auto crop is ready. Adjust the crop box if needed, then submit.",
+      "Auto crop is ready. Adjust the crop box if needed, then submit the cropped sketch.",
     );
   };
 
-  const getCroppedBlob = () => {
+  const renderCroppedImage = () => {
     return new Promise((resolve, reject) => {
       const canvas = canvasRef.current;
       const image = imgRef.current;
-
       const activeCrop =
         completedCrop ||
         (image ? percentToPixelCrop(DEFAULT_CROP, image) : null);
@@ -324,7 +448,6 @@ function UploadSection() {
 
       const scaleX = image.naturalWidth / image.width;
       const scaleY = image.naturalHeight / image.height;
-
       const outputWidth = Math.max(1, Math.round(activeCrop.width * scaleX));
       const outputHeight = Math.max(1, Math.round(activeCrop.height * scaleY));
 
@@ -332,7 +455,6 @@ function UploadSection() {
       canvas.height = outputHeight;
 
       const ctx = canvas.getContext("2d");
-
       if (!ctx) {
         reject(new Error("Could not prepare the cropped image."));
         return;
@@ -356,24 +478,22 @@ function UploadSection() {
             reject(new Error("Could not create the cropped image."));
             return;
           }
-
           resolve(blob);
         },
         "image/jpeg",
-        0.92,
+        0.95,
       );
     });
   };
 
   const handleUpload = async () => {
     if (!imageSrc) {
-      setErrorMessage("Please capture or upload a sketch first.");
+      setErrorMessage("Capture or upload a sketch first.");
       return;
     }
 
     submitStartRef.current = performance.now();
     responseReceivedRef.current = null;
-
     setTiming(null);
     setUnsupportedInfo(null);
     setLoading(true);
@@ -381,21 +501,17 @@ function UploadSection() {
     setStatusMessage("Submitting cropped sketch to backend...");
 
     try {
-      const blob = await getCroppedBlob();
-
+      const blob = await renderCroppedImage();
       const formData = new FormData();
       formData.append("file", blob, "cropped-sketch.jpg");
       formData.append("save_debug", "true");
 
-      if (selectedOrgan !== "auto") {
-        formData.append("organ", selectedOrgan);
-      }
+      if (selectedOrgan !== "auto") formData.append("organ", selectedOrgan);
 
       const response = await fetch(`${API_BASE_URL}/api/deform-sketch`, {
         method: "POST",
         body: formData,
       });
-
       const data = await response.json().catch(() => ({}));
       responseReceivedRef.current = performance.now();
 
@@ -418,7 +534,6 @@ function UploadSection() {
 
       const detectedOrgan =
         data.organ || data.prediction?.organ || selectedOrgan;
-
       const returnedModelUrl =
         data.model_url ||
         data.output_url ||
@@ -427,15 +542,12 @@ function UploadSection() {
         data.model ||
         "";
 
-      if (!returnedModelUrl) {
-        console.log("Backend response:", data);
+      if (!returnedModelUrl)
         throw new Error("Backend did not return a GLB model URL.");
-      }
 
       const finalModelUrl = returnedModelUrl.startsWith("http")
         ? returnedModelUrl
         : `${API_BASE_URL}${returnedModelUrl}`;
-
       const backendTiming = data.timing || {};
       const submitToResponseMs = Math.round(
         responseReceivedRef.current - submitStartRef.current,
@@ -444,17 +556,13 @@ function UploadSection() {
       setTiming({
         submitToResponseMs,
         backendProcessingMs:
-          data.processing_time_ms ??
-          backendTiming.processing_time_ms ??
-          backendTiming.backend_total_time_ms ??
-          null,
+          data.processing_time_ms ?? backendTiming.processing_time_ms ?? null,
         backendUploadSaveMs: backendTiming.upload_save_time_ms ?? null,
         backendPredictionMs: backendTiming.prediction_time_ms ?? null,
         backendDeformationMs: backendTiming.deformation_time_ms ?? null,
         modelRenderMs: null,
         totalToDisplayMs: null,
       });
-
       setPrediction(detectedOrgan);
       setModel(finalModelUrl);
       setMetrics(data.metrics || null);
@@ -469,17 +577,9 @@ function UploadSection() {
   };
 
   const analyzeAnother = () => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
-    }
-
-    setFile(null);
-    setImageSrc(null);
-    setCrop(DEFAULT_CROP);
-    setCompletedCrop(null);
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    removeFile();
     setFullscreen(false);
-    setStatusMessage("");
-    resetResult();
   };
 
   return (
@@ -490,33 +590,40 @@ function UploadSection() {
             <h2>Upload Biological Diagram</h2>
 
             <p className="upload-subtitle">
-              Capture from your laptop webcam or upload a sketch image. The app
-              currently supports Brain, Heart, and Lungs. If another organ is
-              detected, the backend will stop before deformation instead of
-              showing a wrong 3D model.
+              Capture from your laptop webcam, upload a sketch image, or scan a
+              QR code to use your phone camera over the same Wi-Fi network. For
+              now, use a plain unruled sheet so notebook lines do not interfere
+              with contour extraction. The app currently supports Brain, Heart,
+              and Lungs. If another organ is detected, the backend stops before
+              deformation instead of showing a wrong 3D model.
             </p>
 
             <div className="toggle-buttons">
               <button
                 type="button"
-                className={!useCamera ? "active-toggle" : ""}
-                onClick={() => setUseCamera(false)}
+                className={inputMode === "upload" ? "active-toggle" : ""}
+                onClick={() => setInputMode("upload")}
               >
                 Upload File
               </button>
-
               <button
                 type="button"
-                className={useCamera ? "active-toggle" : ""}
-                onClick={() => setUseCamera(true)}
+                className={inputMode === "webcam" ? "active-toggle" : ""}
+                onClick={() => setInputMode("webcam")}
               >
-                Use Camera
+                Laptop Camera
+              </button>
+              <button
+                type="button"
+                className={inputMode === "phone" ? "active-toggle" : ""}
+                onClick={() => setInputMode("phone")}
+              >
+                Phone Camera QR
               </button>
             </div>
 
             <div className="manual-organ-row">
               <label htmlFor="organ-select">Organ mode</label>
-
               <select
                 id="organ-select"
                 value={selectedOrgan}
@@ -529,14 +636,20 @@ function UploadSection() {
               </select>
             </div>
 
-            {!useCamera ? (
-              <label
+            {inputMode === "upload" && (
+              <div
                 className="upload-area"
+                role="button"
+                tabIndex={0}
+                aria-label="Choose a sketch image from this device"
+                onClick={openFilePicker}
+                onKeyDown={handleUploadAreaKeyDown}
                 onDrop={handleDrop}
                 onDragOver={handleDragOver}
               >
                 <input
-                  hidden
+                  ref={fileInputRef}
+                  className="file-input-hidden"
                   type="file"
                   accept="image/*"
                   onChange={handleFileChange}
@@ -551,8 +664,10 @@ function UploadSection() {
                 ) : (
                   <div>📄 {file.name}</div>
                 )}
-              </label>
-            ) : (
+              </div>
+            )}
+
+            {inputMode === "webcam" && (
               <div className="camera-section">
                 <Webcam
                   audio={false}
@@ -568,27 +683,36 @@ function UploadSection() {
                   }}
                   className="webcam"
                   onUserMedia={(stream) => {
-                    const track = stream.getVideoTracks()[0];
-                    const settings = track.getSettings();
-
+                    const settings =
+                      stream.getVideoTracks()[0]?.getSettings() || {};
                     setStatusMessage(
-                      `Camera ready: ${settings.width || "auto"} x ${
-                        settings.height || "auto"
-                      }. Use bright light and a dark pen for best results.`,
+                      `Laptop camera ready: ${settings.width || "auto"} x ${settings.height || "auto"}.`,
                     );
                   }}
-                  onUserMediaError={() =>
+                  onUserMediaError={(error) => {
+                    console.error("Webcam access error:", error);
+
+                    if (!window.isSecureContext) {
+                      setErrorMessage(
+                        "Laptop webcam access requires a secure browser page. Open this app on the laptop using http://localhost:5173 instead of the Wi-Fi Network URL. Use the Network URL only for the Phone Camera QR option.",
+                      );
+                      return;
+                    }
+
                     setErrorMessage(
-                      "Could not access webcam. Please allow camera permission in the browser.",
-                    )
-                  }
+                      "Could not access the laptop webcam. Allow camera permission in the browser, check Windows camera privacy settings, and close other apps that may be using the camera.",
+                    );
+                  }}
                 />
 
                 <div className="camera-tips">
                   <strong>For best sketch detection:</strong>
-                  <span>Use a dark pen or marker instead of light pencil.</span>
-                  <span>Keep the paper flat and fill most of the frame.</span>
-                  <span>Use bright lighting and avoid shadows.</span>
+                  <span>Use a plain unruled sheet.</span>
+                  <span>Use a dark pen or marker instead of faint pencil.</span>
+                  <span>
+                    Keep the paper flat, fill most of the frame, and avoid
+                    shadows.
+                  </span>
                 </div>
 
                 <button type="button" className="capture-btn" onClick={capture}>
@@ -597,14 +721,86 @@ function UploadSection() {
               </div>
             )}
 
+            {inputMode === "phone" && (
+              <div className="phone-qr-panel">
+                <h3>Use Phone Camera on the Same Wi-Fi Network</h3>
+                <p>
+                  Connect the laptop and phone to the same Wi-Fi network or
+                  phone hotspot. Open this laptop page using the Vite Network
+                  URL, generate a QR code, and scan it using the phone camera.
+                </p>
+
+                <div className="phone-qr-actions">
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={startMobileScanSession}
+                  >
+                    {mobileScanStatus === "creating"
+                      ? "Creating QR..."
+                      : "Generate Phone QR Code"}
+                  </button>
+                  {mobileScanUrl && (
+                    <button
+                      type="button"
+                      className="remove-btn"
+                      onClick={cancelMobileScan}
+                    >
+                      Clear QR Session
+                    </button>
+                  )}
+                </div>
+
+                {mobileScanUrl && (
+                  <div className="phone-qr-content">
+                    <div className="phone-qr-code">
+                      <QRCodeSVG
+                        value={mobileScanUrl}
+                        size={224}
+                        bgColor="#ffffff"
+                        fgColor="#020617"
+                        level="M"
+                        includeMargin
+                      />
+                    </div>
+                    <div className="phone-qr-instructions">
+                      <strong>Scan this QR code on the phone.</strong>
+                      <span>
+                        QR session expires in about {mobileSessionExpires ?? 10}{" "}
+                        minutes.
+                      </span>
+                      <span>
+                        The phone page will let you capture, preview, and send
+                        the photo.
+                      </span>
+                      <small>{mobileScanUrl}</small>
+                    </div>
+                  </div>
+                )}
+
+                {mobileScanStatus === "waiting" && (
+                  <p className="status-message">
+                    Waiting for the phone-camera sketch...
+                  </p>
+                )}
+                {mobileScanStatus === "received" && (
+                  <p className="status-message">
+                    Phone-camera sketch received successfully.
+                  </p>
+                )}
+                {mobileScanError && (
+                  <p className="error-message">{mobileScanError}</p>
+                )}
+              </div>
+            )}
+
             {imageSrc && (
               <div className="crop-section">
                 <h3>Auto Crop + Manual Crop</h3>
-
                 <p className="crop-help">
-                  The crop box is auto-positioned around the visible sketch.
-                  Drag or resize it before submitting if you want a tighter
-                  crop.
+                  Drag or resize the crop box if needed. The frontend sends the
+                  cropped original image, and the backend performs the final
+                  OpenCV cleanup before classification and deformation.
                 </p>
 
                 <ReactCrop
@@ -625,7 +821,6 @@ function UploadSection() {
             )}
 
             <canvas ref={canvasRef} style={{ display: "none" }} />
-
             {statusMessage && <p className="status-message">{statusMessage}</p>}
 
             {unsupportedInfo && (
@@ -660,17 +855,16 @@ function UploadSection() {
                   onClick={removeFile}
                   disabled={loading}
                 >
-                  Remove Image
+                  Retake / Choose Again
                 </button>
               )}
-
               <button
                 type="button"
                 className="analyze-btn"
                 onClick={handleUpload}
                 disabled={loading || !imageSrc}
               >
-                {loading ? "Processing Sketch..." : "Submit Cropped Sketch"}
+                {loading ? "Processing Sketch..." : "Submit Sketch"}
               </button>
             </div>
           </>
@@ -680,46 +874,37 @@ function UploadSection() {
           <div className="result-layout">
             <div className="organ-info">
               <span className="badge">Detected Organ</span>
-
               <h2>{prediction}</h2>
-
               <p>
-                Your sketch is not used to hallucinate a new organ from scratch.
-                The backend detects the organ, extracts the sketch contour, and
-                deforms a validated base GLB model so it feels like your drawing
-                is shaping the final 3D anatomy.
+                Your sketch is not used to hallucinate anatomy from scratch. The
+                backend detects the organ, extracts the contour, and deforms a
+                validated base GLB model so your drawing shapes the final
+                interactive result.
               </p>
 
               <div className="deformation-note">
                 <strong>Sketch-based deformation:</strong> the model keeps its
-                anatomical structure, while its outer proportions bend toward
-                your drawing. Rotate, zoom, and inspect the result manually in
-                the viewer.
+                recognizable anatomical structure while its proportions bend
+                toward your drawing. Rotate, zoom, and inspect the result
+                manually.
               </div>
 
               {timing && (
                 <div className="timing-box">
                   <h3>Processing Time</h3>
-
                   <div className="metrics-grid">
                     <span>Submit to backend response</span>
                     <strong>{formatMs(timing.submitToResponseMs)}</strong>
-
                     <span>Backend total pipeline</span>
                     <strong>{formatMs(timing.backendProcessingMs)}</strong>
-
                     <span>Backend upload save</span>
                     <strong>{formatMs(timing.backendUploadSaveMs)}</strong>
-
                     <span>CNN/manual detection</span>
                     <strong>{formatMs(timing.backendPredictionMs)}</strong>
-
                     <span>Deformation pipeline</span>
                     <strong>{formatMs(timing.backendDeformationMs)}</strong>
-
                     <span>GLB load/render</span>
                     <strong>{formatMs(timing.modelRenderMs)}</strong>
-
                     <span>Total time to display</span>
                     <strong>
                       {timing.totalToDisplayMs !== null
@@ -733,17 +918,13 @@ function UploadSection() {
               {metrics && (
                 <div className="metrics-box">
                   <h3>Deformation Metrics</h3>
-
                   <div className="metrics-grid">
                     <span>RMS before</span>
                     <strong>{metrics.rms_before ?? "-"}</strong>
-
                     <span>RMS after</span>
                     <strong>{metrics.rms_after ?? "-"}</strong>
-
                     <span>Similarity after</span>
                     <strong>{metrics.similarity_after_percent ?? "-"}%</strong>
-
                     <span>Mean deformation</span>
                     <strong>{metrics.mean_deformation_percent ?? "-"}%</strong>
                   </div>
@@ -761,7 +942,6 @@ function UploadSection() {
                       View correspondence debug
                     </a>
                   )}
-
                   {debugImages.sketch_border_url && (
                     <a
                       href={debugImages.sketch_border_url}
@@ -794,12 +974,10 @@ function UploadSection() {
               >
                 {fullscreen ? "Exit" : "Expand"}
               </button>
-
               <ModelViewer
                 modelUrl={model}
                 onModelDisplayed={() => {
                   if (!submitStartRef.current) return;
-
                   const displayedAt = performance.now();
 
                   setTiming((previousTiming) => ({

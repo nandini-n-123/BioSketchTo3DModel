@@ -1,0 +1,85 @@
+/* BioSketch3D phone-camera QR / scan enhancement additions */
+.phone-qr-panel {
+  margin: 28px 0;
+  padding: 22px;
+  border-radius: 20px;
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  text-align: left;
+}
+
+.phone-qr-panel h3 { margin-top: 0; color: #bae6fd; }
+.phone-qr-panel p { color: #cbd5e1; line-height: 1.65; }
+.phone-qr-panel code { color: #7dd3fc; }
+.phone-qr-actions { display: flex; gap: 12px; flex-wrap: wrap; margin: 18px 0; }
+.phone-qr-content { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; margin-top: 18px; }
+.phone-qr-code { padding: 10px; border-radius: 14px; background: white; line-height: 0; }
+.phone-qr-instructions { display: grid; gap: 8px; color: #cbd5e1; flex: 1; min-width: 230px; }
+.phone-qr-instructions strong { color: #e0f2fe; }
+.phone-qr-instructions small { overflow-wrap: anywhere; color: #7dd3fc; }
+
+.scan-controls { display: flex; justify-content: center; align-items: center; gap: 14px; flex-wrap: wrap; }
+.enhance-toggle { display: flex; align-items: center; gap: 9px; color: #cbd5e1; }
+.secondary-btn {
+  padding: 12px 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: #0f172a;
+  color: white;
+  cursor: pointer;
+}
+.secondary-btn:disabled { cursor: not-allowed; opacity: 0.55; }
+.enhanced-preview-card {
+  width: 100%;
+  max-width: 720px;
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
+}
+.enhanced-preview-card img { width: 100%; margin-top: 12px; border-radius: 14px; background: white; }
+
+.mobile-scan-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: radial-gradient(circle at top, rgba(37, 99, 235, 0.28), transparent 40%), #020617;
+  color: white;
+  font-family: "Poppins", sans-serif;
+}
+.mobile-scan-card {
+  width: min(680px, 100%);
+  padding: 26px;
+  border-radius: 24px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  box-shadow: 0 0 55px rgba(37, 99, 235, 0.2);
+}
+.mobile-scan-badge { display: inline-block; padding: 6px 12px; border-radius: 999px; background: rgba(56, 189, 248, 0.16); color: #bae6fd; }
+.mobile-scan-card h1 { margin-bottom: 8px; }
+.mobile-scan-card p { color: #cbd5e1; line-height: 1.6; }
+.mobile-paper-note { margin: 18px 0; padding: 14px; border-radius: 14px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.24); color: #dbeafe; line-height: 1.55; }
+.mobile-capture-button,
+.mobile-send-button {
+  display: inline-block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 15px 18px;
+  border-radius: 14px;
+  border: none;
+  background: linear-gradient(90deg, #6366f1, #38bdf8);
+  color: white;
+  font-size: 16px;
+  text-align: center;
+  cursor: pointer;
+}
+.mobile-send-button:disabled { opacity: 0.55; cursor: not-allowed; }
+.mobile-scan-preview { width: 100%; margin-top: 18px; border-radius: 16px; background: white; }
+.mobile-scan-status { margin-top: 16px; color: #bae6fd !important; }
+
+@media (max-width: 720px) {
+  .phone-qr-content { justify-content: center; }
+  .phone-qr-instructions { text-align: center; }
+}

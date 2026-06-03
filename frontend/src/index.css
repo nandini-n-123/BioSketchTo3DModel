@@ -808,3 +808,13 @@ body {
   margin-top: 0;
   color: #bae6fd;
 }
+
+/* ===== Reliable upload-file picker ===== */
+.file-input-hidden {
+  display: none;
+}
+
+.upload-area:focus-visible {
+  outline: 3px solid rgba(56, 189, 248, 0.9);
+  outline-offset: 5px;
+}

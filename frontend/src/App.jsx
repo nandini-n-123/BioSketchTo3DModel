@@ -1,7 +1,17 @@
 import UploadSection from "./UploadSection";
+import MobileScanPage from "./MobileScanPage";
 import "./index.css";
+import "./mobile-scan.css";
 
 function App() {
+  const mobileScanMatch = window.location.pathname.match(
+    /^\/mobile-scan\/([a-zA-Z0-9_-]+)\/?$/,
+  );
+
+  if (mobileScanMatch) {
+    return <MobileScanPage sessionId={mobileScanMatch[1]} />;
+  }
+
   const scrollToUpload = () => {
     document.querySelector(".upload-wrapper")?.scrollIntoView({
       behavior: "smooth",
@@ -28,8 +38,8 @@ function App() {
         </h1>
 
         <p>
-          Capture or upload hand-drawn biological diagrams and turn them into
-          interactive 3D anatomy using computer vision, organ classification,
+          Capture or upload a hand-drawn biological diagram and turn it into an
+          interactive 3D organ model using computer vision, AI classification,
           and deterministic sketch-based deformation.
         </p>
 
@@ -43,29 +53,34 @@ function App() {
 
         <div className="grid">
           <div className="card">
-            <h3>Upload</h3>
-            <p>Use your laptop webcam or upload a hand-drawn sketch.</p>
+            <h3>Capture</h3>
+            <p>
+              Upload an image, use the laptop webcam, or scan a QR code to use a
+              phone camera over the same Wi-Fi network.
+            </p>
           </div>
 
           <div className="card">
-            <h3>Crop</h3>
+            <h3>Crop & Process</h3>
             <p>
-              The page auto-detects the sketch area, then lets you refine it.
+              Adjust the crop box if needed. The backend then cleans the sketch
+              using OpenCV before classification and deformation.
             </p>
           </div>
 
           <div className="card">
             <h3>AI Detection</h3>
             <p>
-              A CNN identifies whether the sketch is a brain, heart, or lungs.
+              A CNN accepts supported Brain, Heart, or Lungs sketches and
+              rejects low-confidence inputs.
             </p>
           </div>
 
           <div className="card">
-            <h3>Deformation</h3>
+            <h3>3D Deformation</h3>
             <p>
-              The backend bends a validated GLB model toward your sketch instead
-              of generating risky anatomy from scratch.
+              A validated GLB model bends toward the sketch rather than
+              generating risky anatomy from scratch.
             </p>
           </div>
         </div>
@@ -78,24 +93,24 @@ function App() {
           <div className="card">
             <h3>Create Your Own Model</h3>
             <p>
-              Students can feel like their drawing shaped the 3D output while
-              the base anatomy remains protected.
+              Your drawing shapes the proportions of the final interactive organ
+              model.
             </p>
           </div>
 
           <div className="card">
             <h3>Better Learning</h3>
             <p>
-              Moving from flat notes to an inspectable model makes biological
-              structure easier to understand.
+              Move from a flat diagram to a model that you can rotate, zoom, and
+              inspect.
             </p>
           </div>
 
           <div className="card">
-            <h3>Fast & Safe</h3>
+            <h3>Controlled Output</h3>
             <p>
-              The system deforms existing models, avoiding slow generative
-              pipelines and reducing anatomical hallucinations.
+              The system uses trusted baseline models and stops unsupported
+              sketches before deformation.
             </p>
           </div>
         </div>

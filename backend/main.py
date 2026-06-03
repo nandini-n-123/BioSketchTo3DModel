@@ -2,7 +2,7 @@ import json
 import sys
 import uuid
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -68,6 +68,13 @@ UNSUPPORTED_ORGAN_MESSAGE = (
     "BioSketch3D. At present, the system supports only Brain, Heart, and Lungs "
     "because validated 3D models are available only for these organs."
 )
+
+# Temporary local-only sessions used by the same-Wi-Fi QR phone-camera flow.
+# Sessions are intentionally stored in memory because this is a local classroom
+# demo feature. Restarting FastAPI clears any active QR sessions.
+MOBILE_SCAN_SESSIONS: Dict[str, Dict[str, Any]] = {}
+MOBILE_SCAN_EXPIRY_MINUTES = 10
+
 
 
 # ============================================================
@@ -143,6 +150,14 @@ app.mount(
     "/outputs",
     StaticFiles(directory=str(OUTPUTS_DIR)),
     name="outputs",
+)
+
+# Serve phone-camera uploads so the laptop page can fetch the received image
+# and pass it into the existing crop / enhancement flow.
+app.mount(
+    "/mobile_uploads",
+    StaticFiles(directory=str(UPLOADS_DIR)),
+    name="mobile_uploads",
 )
 
 # Serve presentation/debug images and timing logs if needed.
@@ -457,6 +472,30 @@ def _append_timing_log(record: Dict[str, Any]) -> None:
         print(f"[WARNING] Could not write timing log: {e}")
 
 
+def _get_mobile_scan_session_or_raise(session_id: str) -> Dict[str, Any]:
+    """
+    Return a valid in-memory mobile scan session or raise a useful HTTP error.
+    """
+    session = MOBILE_SCAN_SESSIONS.get(session_id)
+
+    if not session:
+        raise HTTPException(
+            status_code=404,
+            detail="Mobile scan session was not found. Generate a new QR code on the laptop.",
+        )
+
+    if datetime.now() - session["created_at"] > timedelta(
+        minutes=MOBILE_SCAN_EXPIRY_MINUTES
+    ):
+        MOBILE_SCAN_SESSIONS.pop(session_id, None)
+        raise HTTPException(
+            status_code=410,
+            detail="Mobile scan session expired. Generate a new QR code on the laptop.",
+        )
+
+    return session
+
+
 # ============================================================
 # Routes
 # ============================================================
@@ -485,8 +524,83 @@ def health():
         "endpoints": {
             "main_pipeline": "/api/deform-sketch",
             "classifier_only": "/api/classify-sketch",
+            "mobile_scan_create": "/api/mobile-scan/session",
+            "mobile_scan_status": "/api/mobile-scan/{session_id}",
+            "mobile_scan_upload": "/api/mobile-scan/{session_id}/upload",
             "outputs": "/outputs/{generated_file.glb}",
         },
+    }
+
+
+@app.post("/api/mobile-scan/session")
+def create_mobile_scan_session(request: Request):
+    """
+    Create a temporary QR-based mobile upload session.
+
+    Same-Wi-Fi mode:
+        Run Vite and FastAPI on 0.0.0.0, open the laptop frontend using its
+        LAN address (for example, http://192.168.1.10:5173), then scan the QR
+        code using a phone connected to the same Wi-Fi network or hotspot.
+    """
+    session_id = uuid.uuid4().hex
+
+    MOBILE_SCAN_SESSIONS[session_id] = {
+        "status": "waiting",
+        "image_url": None,
+        "image_path": None,
+        "created_at": datetime.now(),
+    }
+
+    base_url = str(request.base_url).rstrip("/")
+
+    return {
+        "status": "success",
+        "session_id": session_id,
+        "expires_in_minutes": MOBILE_SCAN_EXPIRY_MINUTES,
+        "backend_status_url": f"{base_url}/api/mobile-scan/{session_id}",
+    }
+
+
+@app.post("/api/mobile-scan/{session_id}/upload")
+async def upload_mobile_scan(
+    session_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+):
+    """
+    Receive a high-quality sketch image captured using the phone camera over the local network.
+    The image is not deformed immediately. The laptop receives it first so the
+    user can still crop, preview, enhance, and submit it normally.
+    """
+    session = _get_mobile_scan_session_or_raise(session_id)
+    image_path = await _save_uploaded_image(file)
+
+    base_url = str(request.base_url).rstrip("/")
+    image_url = f"{base_url}/mobile_uploads/{image_path.name}"
+
+    session["status"] = "received"
+    session["image_path"] = str(image_path)
+    session["image_url"] = image_url
+    session["received_at"] = datetime.now()
+
+    return {
+        "status": "success",
+        "message": "Sketch sent successfully. Check the laptop screen.",
+        "image_url": image_url,
+    }
+
+
+@app.get("/api/mobile-scan/{session_id}")
+def get_mobile_scan_status(session_id: str):
+    """
+    The laptop polls this endpoint until a phone-camera image arrives.
+    """
+    session = _get_mobile_scan_session_or_raise(session_id)
+
+    return {
+        "status": session["status"],
+        "image_url": session["image_url"],
+        "expires_in_minutes": MOBILE_SCAN_EXPIRY_MINUTES,
     }
 
 
